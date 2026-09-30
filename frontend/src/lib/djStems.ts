@@ -58,10 +58,46 @@ export async function listStems(entryId: string): Promise<StemRef[]> {
   }
 }
 
-export interface SeparateOpts { stems?: 2 | 4 | 6 | 12; device?: string; quality?: string }
+export interface SeparateOpts {
+  stems?: 2 | 4 | 6 | 12;
+  device?: string;
+  quality?: string;
+  /** Aborting it cancels the run: the backend's abort route is called and
+   *  the promise rejects with a {@link StemsAborted}, never with stems. */
+  signal?: AbortSignal;
+}
+
+/** What {@link ensureStems} rejects with when its `signal` aborted the run. */
+export class StemsAborted extends Error {
+  constructor(entryId: string) {
+    super(`stem separation aborted for ${entryId}`);
+    this.name = 'StemsAborted';
+  }
+}
+
+export const isStemsAborted = (e: unknown): e is StemsAborted => e instanceof StemsAborted;
+
+/** Progress phases after which a run is over, or already told to stop. */
+const SETTLED_PHASES = new Set(['idle', 'aborting', 'aborted', 'completed', 'failed']);
+
+/** Ask the backend to stop an in-flight separation
+ *  (`POST /api/stems/{entry}/abort`; the run ends at its next poll tick).
+ *  Resolves true when the backend had a run to mark. */
+export async function abortStems(entryId: string): Promise<boolean> {
+  try {
+    const r = await fetch(`/api/stems/${encodeURIComponent(entryId)}/abort`, { method: 'POST' });
+    if (!r.ok) return false;
+    const j = await r.json().catch(() => ({}));
+    return j?.ok === true;
+  } catch {
+    return false;
+  }
+}
 
 /** Return cached stems, else run separation (foreground; resolves when done),
- *  polling progress for a % while the run is in flight, then list the result. */
+ *  polling progress for a % while the run is in flight, then list the result.
+ *  `opts.signal` aborts the run: the backend is told to stop, and the promise
+ *  rejects with {@link StemsAborted} even when the run finished anyway. */
 export async function ensureStems(
   entryId: string,
   opts: SeparateOpts = {},
@@ -70,6 +106,8 @@ export async function ensureStems(
   const stems = opts.stems ?? 4;
   const device = opts.device ?? 'auto';
   const quality = opts.quality ?? 'fast';
+  const signal = opts.signal;
+  if (signal?.aborted) throw new StemsAborted(entryId);
   const existing = await listStems(entryId);
   if (existing.length >= stems) {
     onProgress?.(100, 'cached');
@@ -79,6 +117,12 @@ export async function ensureStems(
     logInfo('dj-stems', `Upgrading ${entryId} from ${existing.length} cached stem(s) to ${stems} stem(s)…`);
   }
   logInfo('dj-stems', `Separating ${entryId} (${stems} stems, ${quality})…`);
+
+  // The abort goes to the backend the moment it is asked for. A run still
+  // queued behind the GPU lane has no progress snapshot yet, so the backend
+  // has nothing to mark; the poll below re-sends it once the run is alive.
+  const onAbort = () => { void abortStems(entryId); };
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   let polling = true;
   void (async () => {
@@ -90,6 +134,7 @@ export async function ensureStems(
           if (p && p.phase && p.phase !== 'idle') {
             const raw = typeof p.progress === 'number' ? p.progress : 0;
             onProgress?.(Math.round((raw <= 1 ? raw * 100 : raw)), String(p.phase));
+            if (signal?.aborted && !SETTLED_PHASES.has(String(p.phase))) void abortStems(entryId);
           }
         }
       } catch { /* ignore poll error */ }
@@ -103,15 +148,24 @@ export async function ensureStems(
       { method: 'POST' },
     );
     if (!res.ok) {
+      if (signal?.aborted) throw new StemsAborted(entryId);
       const j = await res.json().catch(() => ({}));
       throw new Error(j.detail || `separation failed (${res.status})`);
     }
   } catch (e) {
+    if (isStemsAborted(e)) {
+      logInfo('dj-stems', `Separation of ${entryId} aborted`);
+      throw e;
+    }
     logError('dj-stems', `Separation failed for ${entryId}: ${e instanceof Error ? e.message : String(e)}`);
     throw e;
   } finally {
     polling = false;
+    signal?.removeEventListener('abort', onAbort);
   }
+  // The abort landed after the run's last poll tick and the run finished: the
+  // stems are cached for next time, but the caller asked for none now.
+  if (signal?.aborted) throw new StemsAborted(entryId);
   return listStems(entryId);
 }
 
@@ -128,6 +182,7 @@ export async function prepareStems(
     throw new Error('analysis failed');
   }
 
+  if (opts.signal?.aborted) throw new StemsAborted(entryId);
   onProgress?.(0, 'checking_stems');
   return ensureStems(entryId, opts, onProgress);
 }

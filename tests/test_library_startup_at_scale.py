@@ -373,14 +373,30 @@ def test_the_startup_only_starts_the_open(tmp_path: Path, monkeypatch) -> None:
                 "/api/library/entries/facets?fields=model",
                 "/api/library/entries/ids",
                 "/api/library/entries/resolve?ref=harbor",
+                # A single-entry lookup (the DJ decks, the footer, every
+                # INFO panel) used to wait for the whole upgrade.
+                "/api/library/entries/s000001",
+                "/api/library/entries/s000001/path",
+                "/api/library/_all/stems",
             ):
                 took, refused = _timed_get(client, route)
                 assert refused.status_code == 503 and took < PROMPT_SEC, route
                 assert refused.json()["library_status"]["phase"] == "opening"
+                assert refused.headers["retry-after"] == "2", route
             took, refused = _timed_post(
                 client, "/api/library/entries/bulk-delete", json={"ids": ["x"]}
             )
             assert refused.status_code == 503 and took < PROMPT_SEC
+            # A write that arrives during the upgrade is refused the same way,
+            # with the Retry-After, never held on a request thread for minutes.
+            started = time.monotonic()
+            refused = client.patch(
+                "/api/library/entries/s000001", json={"favorite": True}
+            )
+            took = time.monotonic() - started
+            assert refused.status_code == 503 and took < PROMPT_SEC
+            assert refused.headers["retry-after"] == "2"
+            assert refused.json()["library_status"]["phase"] == "opening"
             assert _status(client)["phase"] == "opening"
             release.set()
             _wait_for_phase(client, {"ready"}, 60)
