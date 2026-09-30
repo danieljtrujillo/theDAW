@@ -1179,7 +1179,7 @@ export const PianoRollFeel: React.FC = () => {
               mini
               onClick={() => grooveFileRef.current?.click()}
               aria-label="Learn a groove from a MIDI file"
-              description="Read a MIDI file's timing pocket — how late or early each slot of the bar is played — and add it to the groove list"
+              description="Read a MIDI file's timing pocket, how late or early each slot of the bar is played, and add it to the groove list"
               legend="MIDI…"
             />
           </div>
