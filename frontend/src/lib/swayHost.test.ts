@@ -9,11 +9,14 @@
 import assert from 'node:assert/strict';
 import type { PlaceItem } from './placesClient';
 import {
+  HOST_CAP_PLUGIN_FILE,
+  HOST_CAPS,
   cockpitAction,
   hardwareStatus,
   hostScenesFrame,
   loadSceneLists,
   orderSceneRows,
+  pluginFileFrame,
   recentOutsideSceneFolder,
   sceneRowsFrom,
   type SwaySceneRow,
@@ -46,6 +49,31 @@ assert.equal(cockpitAction({ type: 'sway/set-audio-source' }), null);
 // ── scene requests ───────────────────────────────────────────────────────────
 assert.deepEqual(cockpitAction({ type: 'sway/request-scenes' }), { kind: 'request-scenes' });
 assert.deepEqual(cockpitAction({ type: 'sway/choose-scene-file' }), { kind: 'choose-scene-file' });
+
+// ── the cockpit's LOAD .gan chooser asks this host for a file ────────────────
+assert.deepEqual(cockpitAction({ type: 'sway/choose-plugin-file', v: 1 }), { kind: 'choose-plugin-file' });
+assert.ok(HOST_CAPS.includes(HOST_CAP_PLUGIN_FILE), 'sway/host-ready announces that the request is answered');
+// A pick answers with the path and its name; a cancel with no path and no failure.
+assert.deepEqual(pluginFileFrame({ path: 'D:\\gan\\the-owl.gan', cancelled: false }), {
+  type: 'sway/plugin-file',
+  path: 'D:\\gan\\the-owl.gan',
+  name: 'the-owl.gan',
+});
+assert.deepEqual(pluginFileFrame({ path: null, cancelled: true }), { type: 'sway/plugin-file', path: null });
+assert.deepEqual(pluginFileFrame({ path: '  ', cancelled: false }), { type: 'sway/plugin-file', path: null });
+// A file of another kind is a failure, so theDAW is never asked to open it as a .gan.
+assert.deepEqual(pluginFileFrame({ path: '/home/u/song.wav', cancelled: false }), {
+  type: 'sway/plugin-file',
+  path: null,
+  failure: 'Choose a file that ends in .gan.',
+});
+// A failure the host names wins over whatever was picked.
+assert.deepEqual(pluginFileFrame({ path: 'D:\\gan\\ares.gan' }, 'A .gan file can be chosen only on the computer theDAW runs on.'), {
+  type: 'sway/plugin-file',
+  path: null,
+  failure: 'A .gan file can be chosen only on the computer theDAW runs on.',
+});
+assert.deepEqual(pluginFileFrame(null), { type: 'sway/plugin-file', path: null });
 
 // ── a track's right-click ────────────────────────────────────────────────────
 assert.deepEqual(cockpitAction({ type: 'sway/track-menu', trackId: 't1', name: 'Drums', empty: true, x: 40, y: 200 }), {

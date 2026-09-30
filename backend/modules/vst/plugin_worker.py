@@ -133,6 +133,7 @@ def run_job(job_dir: Path) -> int:
                 job.get("params"),
                 raw_state,
                 warnings,
+                raw_params=job.get("raw_params"),
             )
         elif kind == "render":
             events = json.loads((job_dir / MIDI_FILE).read_text(encoding="utf-8"))

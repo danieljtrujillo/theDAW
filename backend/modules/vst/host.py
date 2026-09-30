@@ -174,6 +174,30 @@ def set_plugin_parameter(plugin: Any, name: str, value: float) -> None:
         raise ValueError(str(raw_error)) from raw_error
 
 
+@on_host_thread
+def set_plugin_raw_parameter(plugin: Any, name: str, value: float) -> None:
+    """Set one parameter by its normalized 0..1 position (``raw_value``).
+
+    The SwayCommand cockpit's track panel stores every VST parameter this way,
+    the position of a 0..1 slider, and its desktop sidecar applies it as
+    ``raw_value``; through theDAW the same number reaches the plugin the same
+    way, so a render matches what the panel shows. Raises KeyError for an
+    unknown name and ValueError for a position outside 0..1 or one the plugin
+    rejects.
+    """
+    params = plugin.parameters
+    key = name if name in params else param_key(name)
+    if key not in params:
+        raise KeyError(f"Unknown parameter: {name}")
+    position = float(value)
+    if not 0.0 <= position <= 1.0:
+        raise ValueError(f"raw value {position} is outside 0..1")
+    try:
+        params[key].raw_value = position
+    except Exception as raw_error:
+        raise ValueError(str(raw_error)) from raw_error
+
+
 def _raw_state_bytes(plugin: Any) -> bytes | None:
     try:
         return bytes(plugin.raw_state)
@@ -304,6 +328,7 @@ def process_with_plugin(
     params: dict[str, float] | None = None,
     raw_state: str | bytes | None = None,
     warnings: list[str] | None = None,
+    raw_params: dict[str, float] | None = None,
 ) -> np.ndarray:
     """Process audio through a single VST3 plugin, statelessly.
 
@@ -312,6 +337,11 @@ def process_with_plugin(
     parameters are applied, the audio is processed, and the plugin is discarded
     (it is never added to the instance registry). This mirrors the studio effect
     pipeline so a VST3 can be one stage of the MIX effect chain.
+
+    ``params`` are values in each parameter's own units, as the MIX chain
+    stores them. ``raw_params`` are normalized 0..1 positions, which is what
+    the SwayCommand cockpit stores for a track's plugin (pedalboard's
+    ``raw_value``); they are applied after ``params``.
 
     Anything that could not be applied is appended to ``warnings`` rather than
     swallowed, because the audible symptom of a silent skip (a plugin running at
@@ -337,6 +367,13 @@ def process_with_plugin(
             except Exception as e:
                 notes.append(f"parameter '{name}' not applied: {e}")
                 log.warning("VST param '%s' rejected by %s: %s", name, path.stem, e)
+    if raw_params:
+        for name, value in raw_params.items():
+            try:
+                set_plugin_raw_parameter(plugin, name, float(value))
+            except Exception as e:
+                notes.append(f"parameter '{name}' not applied: {e}")
+                log.warning("VST raw param '%s' rejected by %s: %s", name, path.stem, e)
     return plugin(audio, sample_rate)
 
 

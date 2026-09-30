@@ -282,13 +282,20 @@ def process_with_plugin(
     params: dict[str, float] | None = None,
     raw_state: str | bytes | None = None,
     warnings: list[str] | None = None,
+    raw_params: dict[str, float] | None = None,
 ) -> np.ndarray:
     """``host.process_with_plugin`` in a worker: audio through one effect,
-    loaded fresh with its captured state and parameters, then discarded."""
+    loaded fresh with its captured state and parameters, then discarded.
+    ``raw_params`` are normalized 0..1 positions (the cockpit's convention)."""
     frames = int(np.shape(audio)[0]) if np.ndim(audio) else 0
     return _run_job(
         plugin_path,
-        {"kind": "process", "sample_rate": int(sample_rate), "params": params},
+        {
+            "kind": "process",
+            "sample_rate": int(sample_rate),
+            "params": params,
+            "raw_params": raw_params,
+        },
         {worker.INPUT_AUDIO_FILE: np.asarray(audio)},
         raw_state,
         warnings,

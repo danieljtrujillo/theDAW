@@ -22,6 +22,13 @@ This module also owns two glue duties the embedded cockpit needs:
   ``GET /api/sway/project`` reads one back by name, which is how theDAW opens
   a scene it installed, or by path, for a .sway theDAW saved, installed,
   downloaded or was handed in a dialog anywhere on disk.
+
+* VST renders. The cockpit has no plugin host; a track's VST3 chain is
+  rendered once to a wet file (``POST /api/sway/vst-render``) and played under
+  the track's wet / dry mix. Each plugin runs in a worker process of its own
+  (``backend.modules.vst.isolation``), the output lands in ``data/sway-renders``
+  where ``/api/project/clip-audio`` serves it, and the pure parts live in
+  ``vst_render.py``.
 """
 
 from __future__ import annotations
@@ -29,20 +36,32 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import numpy as np
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from backend.modules.assets import catalog
 from backend.modules.project import media_access
+from backend.modules.vst import path_policy
+from backend.modules.vst.isolation import (
+    PluginProcessError,
+    plugin_label,
+    process_with_plugin,
+)
 
-from . import sidecar
+from . import sidecar, vst_render
 from backend.lib import known_paths, paths
 from backend.lib.atomic import atomic_write
-from backend.lib.cross_site import refuse_cross_site
+from backend.lib.audio_io import load_audio_array, save_audio
+from backend.lib.cross_site import (
+    refuse_cross_site,
+    require_loopback_launch_or_pairing_token,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -363,3 +382,200 @@ async def sway_projects() -> dict:
     rows.sort(key=lambda r: r["name"].casefold())
     rows.sort(key=lambda r: r["mtime"], reverse=True)
     return {"projects": rows}
+
+
+# ---------------------------------------------------------------------------
+# The cockpit's track VST chain, rendered here
+# ---------------------------------------------------------------------------
+
+#: One answer for an input never recorded, outside every media root, gone, or
+#: a browser-only path, so the refusal reveals nothing about the filesystem.
+_INPUT_NOT_SERVED = "That audio is not a file theDAW may render."
+
+
+class SwayVstPlugin(BaseModel):
+    path: str
+    #: Normalized 0..1 positions keyed by pedalboard's parameter name: the
+    #: cockpit's track panel is a row of 0..1 sliders and stores them so.
+    params: dict[str, float] | None = None
+    #: The base64 state its plugin window captured, applied before ``params``.
+    rawState: str | None = None
+
+
+class SwayVstRenderRequest(BaseModel):
+    #: An absolute path from a scene, or a URL theDAW handed the cockpit
+    #: (``/api/library/audio/<id>``, a stem, ``/api/project/clip-audio``).
+    input: str
+    plugins: list[SwayVstPlugin]
+    #: Seconds of silence appended for the chain's decay.
+    tail: float = vst_render.DEFAULT_TAIL_SECONDS
+
+
+def _library_audio_path(entry_id: str) -> Path | None:
+    """The file behind ``/api/library/audio/<id>``, or None."""
+    from backend.modules.library.router import get_store
+
+    try:
+        store = get_store()
+        if store.get_entry(entry_id) is None:
+            return None
+        return store.get_audio_path(entry_id)
+    except Exception as e:  # noqa: BLE001 -- a library still opening refuses
+        log.info("sway: library lookup for %r failed: %s", entry_id, e)
+        return None
+
+
+def _stem_audio_path(stem_id: str) -> Path | None:
+    """The file behind ``/api/library/stems/<id>/audio``, or None."""
+    from backend.modules.library.router import get_store
+
+    try:
+        store = get_store()
+        stem = store.db.get_stem(stem_id) if store.db is not None else None
+    except Exception as e:  # noqa: BLE001 -- a library still opening refuses
+        log.info("sway: stem lookup for %r failed: %s", stem_id, e)
+        return None
+    if not stem or not stem.get("audio_path"):
+        return None
+    return Path(stem["audio_path"])
+
+
+def _plugin_path(raw: str) -> Path:
+    """A cockpit-supplied plugin path, policed as the /api/vst routes police
+    theirs (``path_policy``: a real ``.vst3`` inside an allowed root)."""
+    try:
+        return path_policy.check_plugin_path(raw)
+    except path_policy.PluginPathError as e:
+        raise HTTPException(status_code=e.status, detail=e.message) from e
+
+
+def _wav_seconds(path: Path) -> tuple[float, int] | None:
+    """(seconds, sample rate) from the file's header when libsndfile reads
+    it; None for a format it cannot open, which the decoder then measures."""
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(path))
+    except Exception:  # noqa: BLE001 -- any unreadable header means "measure later"
+        return None
+    if not info.samplerate:
+        return None
+    return float(info.frames) / float(info.samplerate), int(info.samplerate)
+
+
+def _rendered(out: Path, cached: bool, warnings: list[str]) -> dict:
+    length = _wav_seconds(out)
+    if length is None:
+        raise HTTPException(500, f"The render at {out.name} could not be read back.")
+    seconds, sample_rate = length
+    return {
+        "ok": True,
+        "output": str(out),
+        "seconds": seconds,
+        "sampleRate": sample_rate,
+        "cached": cached,
+        "warnings": warnings,
+    }
+
+
+@router.post("/vst-render")
+def sway_vst_render(req: SwayVstRenderRequest, request: Request) -> dict:
+    """Render a clip through the cockpit's track VST chain to a float WAV.
+
+    The input is read with ``backend.lib.audio_io``, ``tail`` seconds of
+    silence are appended, each plugin runs in order in a worker process of its
+    own (a crash is a 502 naming the plugin), the result is clipped to -1..1
+    and written to ``data/sway-renders/<key>.wav``, where ``key`` hashes the
+    input's path, mtime and size with the chain and the tail, so an unchanged
+    chain reuses its render. The file is recorded with known_paths and lies
+    in a clip-audio root, so the cockpit fetches it like any scene media.
+
+    Gated as the VST render routes are: it runs plugin code against a file
+    the caller names. The input must be a file known_paths may serve or one
+    inside theDAW's media roots (the clip-audio rule); anything else is one
+    403. Each plugin path passes the VST module's path policy.
+    """
+    require_loopback_launch_or_pairing_token(request)
+    if not req.plugins:
+        raise HTTPException(422, "The track has no plugins to render through.")
+    if (
+        not math.isfinite(req.tail)
+        or req.tail < 0
+        or req.tail > vst_render.MAX_TAIL_SECONDS
+    ):
+        raise HTTPException(
+            422, f"tail must be between 0 and {vst_render.MAX_TAIL_SECONDS:g} seconds."
+        )
+    chain = [
+        {
+            "path": str(_plugin_path(p.path)),
+            "params": p.params or {},
+            "rawState": p.rawState or None,
+        }
+        for p in req.plugins
+    ]
+    src = vst_render.resolve_input(
+        req.input, library_audio=_library_audio_path, stem_audio=_stem_audio_path
+    )
+    if src is None:
+        raise HTTPException(403, _INPUT_NOT_SERVED)
+    try:
+        st = src.stat()
+    except OSError as e:
+        raise HTTPException(403, _INPUT_NOT_SERVED) from e
+    too_long = f"{src.name} is longer than an hour, the most a render takes."
+    header = _wav_seconds(src)
+    if header is not None and header[0] > vst_render.MAX_INPUT_SECONDS:
+        raise HTTPException(422, too_long)
+
+    key = vst_render.render_key(src, st.st_mtime_ns, st.st_size, chain, req.tail)
+    out = vst_render.renders_dir() / f"{key}.wav"
+    if out.is_file():
+        return _rendered(out, cached=True, warnings=[])
+
+    try:
+        channels_first, sample_rate = load_audio_array(src)
+    except Exception as e:  # noqa: BLE001 -- the decoder's reason is the answer
+        raise HTTPException(400, f"{src.name} could not be decoded: {e}") from e
+    audio = np.ascontiguousarray(channels_first.T, dtype=np.float32)
+    if audio.shape[0] / float(sample_rate) > vst_render.MAX_INPUT_SECONDS:
+        raise HTTPException(422, too_long)
+    audio = vst_render.with_tail(audio, sample_rate, req.tail)
+
+    warnings: list[str] = []
+    for entry in chain:
+        name = plugin_label(entry["path"])
+        notes: list[str] = []
+        try:
+            processed = process_with_plugin(
+                entry["path"],
+                audio,
+                sample_rate,
+                raw_params=entry["params"] or None,
+                raw_state=entry["rawState"],
+                warnings=notes,
+            )
+        except PluginProcessError as e:
+            raise HTTPException(e.status_code, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except Exception as e:  # noqa: BLE001 -- the plugin's reason, named
+            raise HTTPException(500, f"{name} failed to render: {e}") from e
+        warnings.extend(f"{name}: {note}" for note in notes)
+        audio = np.asarray(processed, dtype=np.float32)
+        if audio.ndim == 1:
+            audio = audio[:, np.newaxis]
+    audio = np.clip(audio, -1.0, 1.0)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    part = out.with_name(f"{out.stem}.{os.getpid()}.part.wav")
+    try:
+        # save_audio takes (channels, frames); audio is (frames, channels).
+        save_audio(part, audio.T, sample_rate, format="wav", subtype="FLOAT")
+        os.replace(part, out)
+    except OSError as e:
+        part.unlink(missing_ok=True)
+        raise HTTPException(500, f"The render could not be written: {e}") from e
+    # Recorded as a file the app wrote; pickers keep the user's own folder.
+    known_paths.record(out, kind="audio", source="sway-render", update_folder=False)
+    return _rendered(out, cached=False, warnings=warnings)
