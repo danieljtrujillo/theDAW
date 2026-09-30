@@ -336,7 +336,7 @@ async function main(): Promise<void> {
     assert.ok(select, 'the popover has the Beat select');
     assert.equal(select!.name, 'metronomeClickMode');
     assert.equal(doc.querySelector('label[for="metronome-click-mode"]')?.textContent, 'Beat', 'a real <label for>');
-    assert.deepEqual([...select!.options].map((o) => o.textContent), ['Quarters', 'Groups', 'Dotted quarters']);
+    assert.deepEqual([...select!.options].map((o) => o.textContent), ['Quarters', 'Groups', 'Dotted']);
     assert.equal(select!.value, 'quarter');
     const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value')!.set!;
     await act(async () => {

@@ -122,7 +122,7 @@ export interface ClickPlan {
 /** What a bar's clicks fall on. See the header. */
 export type ClickMode = 'quarter' | 'group' | 'dotted';
 export const CLICK_MODES: readonly ClickMode[] = ['quarter', 'group', 'dotted'];
-export const CLICK_MODE_LABEL: Record<ClickMode, string> = { quarter: 'Quarters', group: 'Groups', dotted: 'Dotted quarters' };
+export const CLICK_MODE_LABEL: Record<ClickMode, string> = { quarter: 'Quarters', group: 'Groups', dotted: 'Dotted' };
 export const CLICK_MODE_TITLE: Record<ClickMode, string> = {
   quarter: 'A click on every quarter note from each bar line',
   group: 'A click on each group start: 7/8 3+2+2 clicks three times, 12/8 on its dotted quarters',

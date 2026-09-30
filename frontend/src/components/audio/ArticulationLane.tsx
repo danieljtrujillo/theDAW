@@ -131,6 +131,7 @@ export const PianoRollArticulationKey: React.FC<{ on: boolean; onChange: (on: bo
       on={on}
       aria-pressed={on}
       onClick={() => onChange(!on)}
+      iconOnly
       legend="Art"
       aria-label="Articulations"
       icon={<Music2 className={STRIP_GLYPH} />}

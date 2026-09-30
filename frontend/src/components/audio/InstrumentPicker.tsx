@@ -157,7 +157,7 @@ export const InstrumentPicker: React.FC<{ idPrefix?: string; compact?: boolean; 
           value={value}
           onChange={onChange}
           onFocus={warm}
-          className={`${DOCK_SELECT} w-40`}
+          className={`${DOCK_SELECT} w-36`}
         >
           {options}
         </select>

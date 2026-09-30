@@ -709,7 +709,7 @@ export const MidiPanel: React.FC = () => {
             library item here instead of pasting a raw id, or drop an audio
             file from the desktop (it imports to the library, then lands here). */}
         <div
-          className={`${FIELD} relative w-44`}
+          className={`${FIELD} relative w-32`}
           onDragOver={(e) => {
             if (dropHasLibraryOrFiles(e.dataTransfer)) {
               e.preventDefault();
@@ -791,8 +791,10 @@ export const MidiPanel: React.FC = () => {
           )}
         </div>
         <StripKey
+          iconOnly
           onClick={() => void analyze()}
           unavailable={busy}
+          aria-label="Analyze"
           description="Detect notes, pitch and lyrics from the library vocal (basic-pitch) and load them into the roll"
           icon={busy ? <Loader2 className={`${STRIP_GLYPH} animate-spin`} /> : <Activity className={STRIP_GLYPH} />}
           legend="Analyze"
