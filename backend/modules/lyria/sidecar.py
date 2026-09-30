@@ -139,6 +139,21 @@ CHECKOUT_RETRY_SEC = 600.0
 # does not say (numberedEnvValues' own default is 10: <VAR>_2 up to <VAR>_10).
 CHILD_KEY_LIMIT = 10
 
+# What a checkout has to be before the user's provider keys go into its
+# environment (verify_checkout). No commit is frozen, so the check reads the
+# checkout itself: its package.json names this package, its version is at or
+# above the last one that ran with keys (the record below), and its server
+# source (server.ts, server/*.ts) still reads every variable theDAW fills
+# (_PROVIDER_ENV_VAR). A checkout that fails gets NO keys, /api/lyria/status
+# and the Lyria card say why, and Update is the one way to move it.
+LYRIA_PACKAGE_NAME = "lyria-3-pro"
+# Where theDAW records the checkout: the commit the last Install, Update or
+# start found it at and the repo it came from, plus the package version of
+# the last checkout that ran with keys. In theDAW's data folder, never in the
+# user's checkout, so it survives a backend restart and an Update alike.
+_CHECKOUT_RECORD_FILE = paths.data_path("lyria_checkout.json")
+_CHECKOUT_RECORD_VERSION = 1
+
 # The provider keys theDAW hands the child (see _child_env). Per provider the
 # order is: the OS environment's value(s), then what was stored here (POST
 # /api/lyria/key[s]), then keys from the assistant's key pool. From the pool
@@ -395,6 +410,272 @@ def checkout_compat(project_path: Path) -> dict:
     }
 
 
+# ── the checkout record and the check a checkout passes before it gets keys ──
+
+_COMMIT_RE = re.compile(r"[0-9a-f]{40,64}")
+# The leading dotted numbers of a package.json version ("1.4.0", "v2.0",
+# "1.2.3-beta.1" reads as 1.2.3); what the floor comparison uses.
+_VERSION_RE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
+_record_lock = Lock()
+
+
+def _empty_record() -> dict:
+    return {
+        "version": _CHECKOUT_RECORD_VERSION,
+        "repo": LYRIA_REPO,
+        "repo_url": LYRIA_REPO_URL,
+        "project_path": None,
+        # The commit the last Install, Update or start found the checkout at,
+        # which of those recorded it, and when.
+        "commit": None,
+        "commit_event": None,
+        "recorded_at": None,
+        # The last checkout that ran WITH keys: its commit and package.json
+        # version. verify_checkout refuses a package.json below this version.
+        "ran_commit": None,
+        "ran_version": None,
+        "ran_at": None,
+    }
+
+
+def checkout_record() -> dict:
+    """What theDAW recorded about the checkout (_CHECKOUT_RECORD_FILE): the
+    commit the last Install, Update or start found it at, the repo it came
+    from, and the package version of the last checkout that ran with keys.
+    Read from disk each time, so it is the same after a backend restart. An
+    unreadable file reads as an empty record."""
+    record = _empty_record()
+    try:
+        raw = json.loads(_CHECKOUT_RECORD_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return record
+    if isinstance(raw, dict):
+        for key in record:
+            if key != "version" and key in raw:
+                record[key] = raw[key]
+    return record
+
+
+def _write_record(**fields: object) -> dict:
+    """Merge ``fields`` into the record on disk (atomic, so a reader sees the
+    old record or the new one). A disk that refuses the write is logged and
+    changes nothing else: the record is diagnostics, never a gate on its own."""
+    with _record_lock:
+        record = checkout_record()
+        record.update(fields)
+        try:
+            atomic_write(_CHECKOUT_RECORD_FILE, json.dumps(record, indent=2))
+        except OSError as e:
+            log.warning(
+                "lyria.sidecar: could not write %s: %s", _CHECKOUT_RECORD_FILE, e
+            )
+        return record
+
+
+def record_checkout(project: Path, commit: Optional[str], event: str) -> dict:
+    """Record that ``event`` (install | update | start) found the checkout at
+    ``project`` at ``commit`` (None when it is not a git checkout), and the
+    repo URL every clone and fetch comes from."""
+    return _write_record(
+        repo=LYRIA_REPO,
+        repo_url=LYRIA_REPO_URL,
+        project_path=str(project),
+        commit=commit,
+        commit_event=event,
+        recorded_at=time.time(),
+    )
+
+
+def _head_from_files(git_dir: Path) -> Optional[str]:
+    """HEAD read from the .git folder itself, for a machine without git:
+    a detached HEAD holds the commit, a branch HEAD names a ref that lives in
+    its own file or in packed-refs."""
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if _COMMIT_RE.fullmatch(head):
+        return head
+    if not head.startswith("ref:"):
+        return None
+    ref = head[4:].strip()
+    try:
+        value = (git_dir / ref).read_text(encoding="utf-8").strip()
+        if _COMMIT_RE.fullmatch(value):
+            return value
+    except (OSError, UnicodeDecodeError):
+        pass
+    try:
+        packed = (git_dir / "packed-refs").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in packed.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == ref and _COMMIT_RE.fullmatch(parts[0]):
+            return parts[0]
+    return None
+
+
+def checkout_head(project: Path) -> Optional[str]:
+    """The commit the checkout is at, or None when it is not a git checkout
+    or its HEAD cannot be read. Asks git when it is installed, and reads
+    .git/HEAD itself when it is not."""
+    git_dir = project / ".git"
+    if not git_dir.exists():
+        return None
+    git = _git_path()
+    if git:
+        try:
+            rev = _git_run(git, ["rev-parse", "HEAD"], project)
+            head = rev.stdout.strip()
+            if rev.returncode == 0 and _COMMIT_RE.fullmatch(head):
+                return head
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return _head_from_files(git_dir) if git_dir.is_dir() else None
+
+
+def package_info(project: Path) -> dict:
+    """``name`` and ``version`` from the checkout's package.json, and
+    ``error`` (a phrase) when the file cannot be read as one."""
+    info: dict = {"name": None, "version": None, "error": None}
+    try:
+        raw = json.loads((project / "package.json").read_text(encoding="utf-8"))
+    except OSError as e:
+        info["error"] = f"package.json cannot be read ({e.strerror or e})"
+        return info
+    except ValueError as e:
+        info["error"] = f"package.json is not valid JSON ({e})"
+        return info
+    if not isinstance(raw, dict):
+        info["error"] = "package.json is not a JSON object"
+        return info
+    name, version = raw.get("name"), raw.get("version")
+    info["name"] = name if isinstance(name, str) else None
+    info["version"] = version if isinstance(version, str) else None
+    return info
+
+
+def _version_tuple(version: Optional[str]) -> Optional[tuple[int, ...]]:
+    if not version:
+        return None
+    match = _VERSION_RE.match(version)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _version_at_least(version: str, floor: str) -> bool:
+    """True when ``version`` is at or above ``floor`` on their leading dotted
+    numbers, shorter one padded with zeros (1.2 is 1.2.0)."""
+    a, b = _version_tuple(version), _version_tuple(floor)
+    if a is None or b is None:
+        return False
+    width = max(len(a), len(b))
+    return a + (0,) * (width - len(a)) >= b + (0,) * (width - len(b))
+
+
+def verify_checkout(project: Path, record: Optional[dict] = None) -> dict:
+    """Whether the checkout at ``project`` gets the user's provider keys, and
+    when not, why, as a sentence for the status and the Lyria card.
+
+    It passes when its package.json names LYRIA_PACKAGE_NAME, its version is
+    at or above ``ran_version`` in the record (the last checkout that ran
+    with keys; nothing to compare before the first run), and its server
+    source (server.ts, server/*.ts, keys.ts among them) reads every variable
+    theDAW fills (_PROVIDER_ENV_VAR): a checkout that no longer reads
+    GEMINI_API_KEY would receive the key for nothing, and one that is not the
+    Lyria package would receive it for something else. Never raises."""
+    record = checkout_record() if record is None else record
+    floor = record.get("ran_version")
+    floor = floor if isinstance(floor, str) and _version_tuple(floor) else None
+    info = package_info(project)
+    sources = _checkout_sources(project)
+    slots = {
+        var: any(var in text for text in sources) for var in _PROVIDER_ENV_VAR.values()
+    }
+    result = {
+        "ok": False,
+        "reason": "",
+        "package_name": info["name"],
+        "package_version": info["version"],
+        "expected_name": LYRIA_PACKAGE_NAME,
+        "floor_version": floor,
+        "slots": slots,
+        "keys_ts": (project / "server" / "keys.ts").is_file(),
+        "checked_at": time.time(),
+    }
+    withheld = "so theDAW hands it no keys"
+    if info["error"]:
+        reason = f"The Lyria checkout at {project}: {info['error']}, {withheld}."
+    elif info["name"] != LYRIA_PACKAGE_NAME:
+        reason = (
+            f"The checkout at {project} is the package "
+            f"'{info['name'] or ''}', not {LYRIA_PACKAGE_NAME}, {withheld}."
+        )
+    elif floor and _version_tuple(info["version"]) is None:
+        reason = (
+            f"package.json at {project} has no version to compare with "
+            f"{floor}, the last one that ran, {withheld}."
+        )
+    elif floor and not _version_at_least(info["version"] or "", floor):
+        reason = (
+            f"package.json at {project} says version {info['version']}, older "
+            f"than {floor}, the last one that ran, {withheld}. Press Update in "
+            "the Lyria panel to move the checkout forward."
+        )
+    elif not all(slots.values()):
+        missing = ", ".join(var for var, found in slots.items() if not found)
+        reason = (
+            f"The server source of the checkout at {project} (server.ts, "
+            f"server/*.ts) does not read {missing}, {withheld}."
+        )
+    else:
+        result["ok"] = True
+        return result
+    result["reason"] = reason
+    return result
+
+
+_verify_lock = Lock()
+# The check the last spawn made (see _child_env): ``ok`` is None until one
+# has. /api/lyria/url reports it for the Lyria panel.
+_verify_state: dict = {"ok": None, "reason": "", "checked_at": None}
+
+
+def verify_state() -> dict:
+    with _verify_lock:
+        return dict(_verify_state)
+
+
+def _set_verify(result: dict) -> None:
+    with _verify_lock:
+        _verify_state.clear()
+        _verify_state.update(result)
+
+
+def _record_start(project: Path, head: Optional[str]) -> None:
+    """After a spawn: record the commit it started from and, when the
+    checkout passed verify_checkout, its package version as the floor the
+    next check compares against."""
+    fields: dict[str, object] = dict(
+        repo=LYRIA_REPO,
+        repo_url=LYRIA_REPO_URL,
+        project_path=str(project),
+        commit=head,
+        commit_event="start",
+        recorded_at=time.time(),
+    )
+    check = verify_state()
+    if check.get("ok"):
+        fields.update(
+            ran_commit=head,
+            ran_version=check.get("package_version"),
+            ran_at=time.time(),
+        )
+    _write_record(**fields)
+
+
 def _child_env(cfg: LyriaConfig) -> dict[str, str]:
     """Build the child's environment.
 
@@ -410,6 +691,12 @@ def _child_env(cfg: LyriaConfig) -> dict[str, str]:
     without server/keys.ts can read. The rest of the list goes into the
     numbered ``_2`` .. ``_<max>`` variables, and only as many as the checkout
     reads (checkout_key_slots). No key value is ever logged.
+
+    Before any key goes in, the checkout passes verify_checkout: the right
+    package, no older than the last one that ran, still reading the
+    variables filled here. One that fails gets none of them (every provider
+    slot is cleared, so the child inherits nothing either); the result is
+    kept for /api/lyria/url (verify_state) and the reason is logged.
     """
     env = child_env()
     env["PORT"] = str(cfg.port)
@@ -419,6 +706,8 @@ def _child_env(cfg: LyriaConfig) -> dict[str, str]:
         # Explicit opt-in to real spending: clear any inherited mock flag so a
         # stale value in the parent's environment can't silently re-enable it.
         env.pop("LYRIA_MOCK", None)
+    check = verify_checkout(cfg.project_path)
+    _set_verify(check)
     # Every provider slot is cleared first and then filled from the resolved
     # list, so nothing the parent inherited (a blank value, a stale numbered
     # key the list no longer holds) reaches the child behind theDAW's back.
@@ -430,7 +719,7 @@ def _child_env(cfg: LyriaConfig) -> dict[str, str]:
     resolved: dict[str, list[str]] = {}
     passed: dict[str, int] = {}
     for provider in LYRIA_PROVIDERS:
-        keys, _source = resolved_keys(provider)
+        keys, _source = resolved_keys(provider) if check["ok"] else ([], "withheld")
         resolved[provider] = keys
         var = _PROVIDER_ENV_VAR[provider]
         limit = slots.get(var, 1)
@@ -448,6 +737,9 @@ def _child_env(cfg: LyriaConfig) -> dict[str, str]:
     ai_provider = _child_ai_provider(resolved)
     if ai_provider:
         env["AI_PROVIDER"] = ai_provider
+    if not check["ok"]:
+        log.warning("lyria.sidecar: child keys withheld -- %s", check["reason"])
+        return env
     log.info(
         "lyria.sidecar: child keys -- gemini=%d/%d openrouter=%d/%d "
         "(handed/held; this checkout takes %s) provider=%s",
@@ -1539,6 +1831,12 @@ def probe() -> dict:
         "reads_key_lists": checkout_reads_key_lists(pkg),
         "compat": checkout_compat(pkg),
         "checkout": checkout_state(),
+        # The commit the checkout is at now, what theDAW recorded about it
+        # (the last Install, Update or start, and the version that last ran
+        # with keys), and whether it gets keys as it is (verify_checkout).
+        "head": checkout_head(pkg) if pkg_json.is_file() else None,
+        "checkout_record": checkout_record(),
+        "verify": verify_checkout(pkg) if pkg_json.is_file() else None,
         "update": update_status(),
         "listening": listening,
         "process_alive": _proc is not None and _proc.poll() is None,
@@ -1907,6 +2205,7 @@ def _fast_forward_checkout(
                 f"Could not update the Lyria checkout, so it stays as it is: {e}",
             )
         log.info("lyria.sidecar: moved %s from %s to %s", project, head[:7], latest[:7])
+        record_checkout(project, latest, "update")
         if needs_install:
             log.info("lyria.sidecar: dependencies changed -- running npm install")
             _run_npm_install(cfg)
@@ -2155,6 +2454,13 @@ def _install_worker(cfg: LyriaConfig, need_clone: bool, git: str) -> None:
                 commit = _clone_latest(git, target, out)
             _set_latest(commit)
             _set_checkout("current", commit, f"Installed at {commit[:7]}.")
+            record_checkout(target, commit, "install")
+            log.info(
+                "lyria.sidecar: installed %s at commit %s into %s",
+                LYRIA_REPO_URL,
+                commit,
+                target,
+            )
         _set_install(
             status="installing",
             step="npm",
@@ -2427,6 +2733,19 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                 # needs no build step and is the path the app is developed
                 # and tested against.
                 cmd = [cfg.npm_path, "run", "dev"]
+                # Every start names the commit it runs, so a log tells which
+                # Lyria was running when something went wrong.
+                head = checkout_head(cfg.project_path)
+                package = package_info(cfg.project_path)
+                log.info(
+                    "lyria.sidecar: starting Lyria from %s at commit %s (%s), "
+                    "package %s@%s",
+                    cfg.project_path,
+                    head or "unknown: not a git checkout",
+                    LYRIA_REPO_URL,
+                    package["name"] or "?",
+                    package["version"] or "?",
+                )
                 log.info(
                     "lyria.sidecar: spawning %s (cwd=%s, port=%d, mock=%s)",
                     " ".join(cmd),
@@ -2474,6 +2793,7 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                 if stop_hit:
                     _terminate_proc(new_proc)
                     raise RuntimeError("stopped")
+                _record_start(cfg.project_path, head)
 
     with _state_lock:
         expected_proc = _proc

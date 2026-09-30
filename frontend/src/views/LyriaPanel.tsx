@@ -34,6 +34,13 @@ export interface LyriaUpdateReply {
   latest?: { head: string | null; latest: string | null; available: boolean } | null;
 }
 
+/** The check the backend made before handing the child keys
+ *  (sidecar.verify_state): `ok` false means it runs with none. */
+interface LyriaVerify {
+  ok: boolean | null;
+  reason: string;
+}
+
 /** GET /api/lyria/url and POST /api/lyria/restart. */
 interface LyriaUrlReply {
   url: string;
@@ -41,6 +48,14 @@ interface LyriaUrlReply {
   /** True when this Lyria was not started by this backend session. */
   external?: boolean;
   checkout?: LyriaCheckout;
+  verify?: LyriaVerify | null;
+}
+
+/** The sentence to show when the child got no keys, or '' when it did (or
+ *  when nothing is known: an adopted Lyria, a reply without the field). */
+export function lyriaKeysNote(verify: LyriaVerify | null | undefined): string {
+  if (!verify || verify.ok !== false) return '';
+  return verify.reason ? `No keys handed: ${verify.reason}` : 'No keys handed: the checkout failed the check.';
 }
 
 /** Checkout states the backend left alone, with a reason worth reading. */
@@ -93,6 +108,9 @@ export const LyriaPanel: React.FC = () => {
   // with until it is restarted from here.
   const [external, setExternal] = useState(false);
   const [checkoutNote, setCheckoutNote] = useState('');
+  // The backend's reason when it handed this child no keys (the checkout
+  // failed the check it has to pass first), or '' when it got them.
+  const [keysNote, setKeysNote] = useState('');
   const [restarting, setRestarting] = useState(false);
   const [restartError, setRestartError] = useState('');
   // Update: fast-forward the checkout to the latest commit of the Lyria repo.
@@ -206,6 +224,7 @@ export const LyriaPanel: React.FC = () => {
     setMock(j.mock ?? null);
     setExternal(Boolean(j.external));
     setCheckoutNote(lyriaCheckoutNote(j.checkout));
+    setKeysNote(lyriaKeysNote(j.verify));
   };
 
   /**
@@ -541,7 +560,7 @@ export const LyriaPanel: React.FC = () => {
       {/* How an Update is going and how it ended, why the checkout was left
           where it is (local changes, its own branch, no network, a checkout
           the user manages), and a refused restart. */}
-      {(checkoutNote || restartError || updateProgress || updateNote) && (
+      {(checkoutNote || keysNote || restartError || updateProgress || updateNote) && (
         <div className="flex flex-col gap-0.5 px-2 py-1 border-b border-zinc-800 shrink-0">
           {updateProgress && (
             <p role="status" className="text-xs font-bold leading-snug text-sky-200">
@@ -551,6 +570,15 @@ export const LyriaPanel: React.FC = () => {
           {checkoutNote && (
             <p role="status" className="text-xs font-bold leading-snug text-amber-200">
               {checkoutNote}
+            </p>
+          )}
+          {/* The child runs without the user's keys: the checkout failed the
+              check the backend makes before handing them (the wrong package,
+              a version below the last one that ran, a server that no longer
+              reads the key variables). Update is the way forward. */}
+          {keysNote && (
+            <p role="alert" className="text-xs font-bold leading-snug text-rose-300">
+              {keysNote}
             </p>
           )}
           {updateNote && (

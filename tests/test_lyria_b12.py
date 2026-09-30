@@ -114,8 +114,12 @@ def _reset_sidecar_module_state(tmp_path, monkeypatch):
         sidecar, "_DEPS_PENDING_FILE", tmp_path / "lyria_deps_pending.json"
     )
     monkeypatch.setattr(
+        sidecar, "_CHECKOUT_RECORD_FILE", tmp_path / "lyria_checkout.json"
+    )
+    monkeypatch.setattr(
         sidecar, "SIDECAR_LOG_PATH", tmp_path / "logs" / "lyria-sidecar.log"
     )
+    monkeypatch.setattr(sidecar, "_verify_state", dict(sidecar._verify_state))
     sidecar._proc = None
     sidecar._resolved_url = None
     sidecar._stop_requested = False
@@ -1386,6 +1390,9 @@ def lyria_keys(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sidecar, "_DEPS_PENDING_FILE", tmp_path / "lyria_deps_pending.json"
     )
+    monkeypatch.setattr(
+        sidecar, "_CHECKOUT_RECORD_FILE", tmp_path / "lyria_checkout.json"
+    )
     for var in (*_KEY_VARS, *_NUMBERED, "AI_PROVIDER", "theDAW_LYRIA_PROJECT"):
         monkeypatch.delenv(var, raising=False)
     pools: dict[str, list[str]] = {}
@@ -1395,11 +1402,16 @@ def lyria_keys(tmp_path, monkeypatch):
     return SimpleNamespace(path=path, backup=sidecar._KEY_FILE_BACKUP, pools=pools)
 
 
+# The package.json of the Lyria repo (its name and version at 192032e), which a
+# checkout has to carry before the sidecar hands it keys (verify_checkout).
+_LYRIA_PACKAGE_JSON = '{"name": "lyria-3-pro", "version": "0.0.0"}\n'
+
+
 def _old_checkout(root) -> object:
     """A Lyria checkout from before server/keys.ts, shaped like the user's own
     lyria/ at 192032e: server.ts reads GEMINI_API_KEY as ONE key."""
     root.mkdir(parents=True, exist_ok=True)
-    (root / "package.json").write_text("{}", encoding="utf-8")
+    (root / "package.json").write_text(_LYRIA_PACKAGE_JSON, encoding="utf-8")
     (root / "server.ts").write_text(
         "const key = clientKey || process.env.GEMINI_API_KEY;\n"
         "return clientKey || process.env.OPENROUTER_API_KEY;\n",
@@ -1414,7 +1426,7 @@ def _list_checkout(root) -> object:
     the numbered slots of both provider variables with it (the lines are
     those of that commit's server/keys.ts:60 and server.ts:9, :60-:71)."""
     root.mkdir(parents=True, exist_ok=True)
-    (root / "package.json").write_text("{}", encoding="utf-8")
+    (root / "package.json").write_text(_LYRIA_PACKAGE_JSON, encoding="utf-8")
     (root / "server").mkdir(exist_ok=True)
     (root / "server" / "keys.ts").write_text(
         "export function numberedEnvValues(env: NodeJS.ProcessEnv, prefix: "
@@ -2885,14 +2897,17 @@ def _git(*args: str, cwd=None) -> str:
 @pytest.fixture
 def upstream(tmp_path):
     """An upstream Lyria repo on branch main: A is the old shape (no
-    server/keys.ts), B the key-list shape, C a later commit on top of B and
-    the default branch's head."""
+    server/keys.ts; its server.ts reads one key per provider, the two lines
+    of the user's own checkout at 192032e), B the key-list shape, C a later
+    commit on top of B and the default branch's head."""
     repo = tmp_path / "upstream"
     repo.mkdir()
     _git("init", "-q", "-b", "main", str(repo))
     (repo / "package.json").write_text('{"name": "lyria-3-pro"}\n', encoding="utf-8")
     (repo / "server.ts").write_text(
-        "const key = clientKey || process.env.GEMINI_API_KEY;\n", encoding="utf-8"
+        "const key = clientKey || process.env.GEMINI_API_KEY;\n"
+        "return clientKey || process.env.OPENROUTER_API_KEY;\n",
+        encoding="utf-8",
     )
     _git("add", "-A", cwd=repo)
     _git("commit", "-q", "-m", "A: one key per provider", cwd=repo)
@@ -3501,12 +3516,14 @@ def test_child_env_hands_each_variable_only_the_keys_it_reads(lyria_keys, tmp_pa
         sidecar.add_key("openrouter", f"openrouter-key-{n}")
     partial = tmp_path / "partial"
     (partial / "server").mkdir(parents=True)
+    (partial / "package.json").write_text(_LYRIA_PACKAGE_JSON, encoding="utf-8")
     (partial / "server" / "keys.ts").write_text(
         "export function numberedEnvValues(env, prefix, max = 10) {\n",
         encoding="utf-8",
     )
     (partial / "server.ts").write_text(
-        "numberedEnv: numberedEnvValues(process.env, 'GEMINI_API_KEY', 3),\n",
+        "numberedEnv: numberedEnvValues(process.env, 'GEMINI_API_KEY', 3),\n"
+        "return clientKey || process.env.OPENROUTER_API_KEY;\n",
         encoding="utf-8",
     )
 
@@ -3518,3 +3535,212 @@ def test_child_env_hands_each_variable_only_the_keys_it_reads(lyria_keys, tmp_pa
         "GEMINI_API_KEY_3": "gemini-key-3",
         "OPENROUTER_API_KEY": "openrouter-key-1",
     }
+
+
+# ---------------------------------------------------------------------------
+# The check a checkout passes before it gets keys, and the record of the
+# commit it is at
+# ---------------------------------------------------------------------------
+
+
+def _record() -> dict:
+    return json.loads(sidecar._CHECKOUT_RECORD_FILE.read_text(encoding="utf-8"))
+
+
+def test_both_shapes_of_the_lyria_repo_pass_the_check(lyria_keys, tmp_path):
+    """The user's own checkout at 192032e (one key per provider, no
+    server/keys.ts) and the repo's head with server/keys.ts both name the
+    package and read both variables, so both get keys, with nothing to
+    compare against before a first run."""
+    for project in (_old_checkout(tmp_path / "old"), _list_checkout(tmp_path / "new")):
+        check = sidecar.verify_checkout(project)
+        assert check["ok"] is True, check
+        assert check["reason"] == ""
+        assert check["package_name"] == "lyria-3-pro"
+        assert check["package_version"] == "0.0.0"
+        assert check["floor_version"] is None
+        assert check["slots"] == {
+            "GEMINI_API_KEY": True,
+            "OPENROUTER_API_KEY": True,
+        }
+
+
+def test_the_check_refuses_the_wrong_package_a_missing_slot_and_an_older_version(
+    lyria_keys, tmp_path
+):
+    """Four checkouts that must not be handed keys, each with a reason the
+    card can show: no package.json at all, a package of another name, a
+    server that no longer reads OPENROUTER_API_KEY, and a package.json
+    version below the one that last ran."""
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "server.ts").write_text("process.env.GEMINI_API_KEY", encoding="utf-8")
+    check = sidecar.verify_checkout(bare)
+    assert check["ok"] is False
+    assert "package.json cannot be read" in check["reason"]
+    assert "hands it no keys" in check["reason"]
+
+    other = _list_checkout(tmp_path / "other")
+    (other / "package.json").write_text(
+        '{"name": "some-other-app", "version": "9.9.9"}', encoding="utf-8"
+    )
+    check = sidecar.verify_checkout(other)
+    assert check["ok"] is False
+    assert "'some-other-app', not lyria-3-pro" in check["reason"]
+
+    renamed = _list_checkout(tmp_path / "renamed")
+    (renamed / "server.ts").write_text(
+        (renamed / "server.ts")
+        .read_text(encoding="utf-8")
+        .replace("OPENROUTER_API_KEY", "OPENROUTER_TOKEN"),
+        encoding="utf-8",
+    )
+    check = sidecar.verify_checkout(renamed)
+    assert check["ok"] is False
+    assert "does not read OPENROUTER_API_KEY" in check["reason"]
+    assert check["slots"] == {"GEMINI_API_KEY": True, "OPENROUTER_API_KEY": False}
+
+    older = _list_checkout(tmp_path / "older")
+    (older / "package.json").write_text(
+        '{"name": "lyria-3-pro", "version": "1.2.0"}', encoding="utf-8"
+    )
+    ran = {**sidecar._empty_record(), "ran_version": "1.10.0"}
+    check = sidecar.verify_checkout(older, ran)
+    assert check["ok"] is False
+    assert "says version 1.2.0, older than 1.10.0" in check["reason"]
+    assert "Press Update" in check["reason"]
+    assert check["floor_version"] == "1.10.0"
+    # At or above the floor passes: the same version, and a later one.
+    for version in ("1.10.0", "1.10", "1.11.0-beta.1", "2.0.0"):
+        (older / "package.json").write_text(
+            f'{{"name": "lyria-3-pro", "version": "{version}"}}', encoding="utf-8"
+        )
+        assert sidecar.verify_checkout(older, ran)["ok"] is True, version
+    # A floor with no version to compare against it is refused too.
+    (older / "package.json").write_text('{"name": "lyria-3-pro"}', encoding="utf-8")
+    check = sidecar.verify_checkout(older, ran)
+    assert check["ok"] is False
+    assert "has no version to compare with 1.10.0" in check["reason"]
+
+
+def test_a_checkout_that_fails_the_check_is_handed_no_keys(
+    lyria_keys, tmp_path, monkeypatch, caplog
+):
+    """Keys in the environment, in the Lyria card and in the shared pool,
+    then a spawn from a checkout whose package.json names another package:
+    the child's environment holds none of them, not even the inherited
+    ones, the reason is logged (never a key), and verify_state carries it
+    for /api/lyria/url."""
+    monkeypatch.setenv("GEMINI_API_KEY", "env-gemini-secret")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "env-gemini-secret-two")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "env-openrouter-secret")
+    sidecar.add_key("gemini", "file-gemini-secret")
+    sidecar.add_key("openrouter", "file-openrouter-secret")
+    lyria_keys.pools["gemini"] = ["pool-gemini-secret"]
+    sidecar.set_pool_shared(True)
+    project = _list_checkout(tmp_path / "impostor")
+    (project / "package.json").write_text(
+        '{"name": "not-lyria", "version": "0.0.0"}', encoding="utf-8"
+    )
+
+    with caplog.at_level("INFO"):
+        env = sidecar._child_env(_cfg(project))
+
+    assert _key_slots(env) == {}
+    for value in (
+        "env-gemini-secret",
+        "env-gemini-secret-two",
+        "env-openrouter-secret",
+        "file-gemini-secret",
+        "file-openrouter-secret",
+        "pool-gemini-secret",
+    ):
+        assert value not in env.values()
+    assert env["PORT"] == "5188" and env["LYRIA_MOCK"] == "1"
+    assert "child keys withheld" in caplog.text
+    assert "'not-lyria', not lyria-3-pro" in caplog.text
+    assert "secret" not in caplog.text
+    state = sidecar.verify_state()
+    assert state["ok"] is False
+    assert "'not-lyria', not lyria-3-pro" in state["reason"]
+
+    # The same keys, a checkout that passes: every one of them is handed.
+    env = sidecar._child_env(_cfg(_list_checkout(tmp_path / "real")))
+    assert env["GEMINI_API_KEY"] == "env-gemini-secret"
+    assert env["GEMINI_API_KEY_4"] == "pool-gemini-secret"
+    assert env["OPENROUTER_API_KEY"] == "env-openrouter-secret"
+    assert sidecar.verify_state()["ok"] is True
+
+
+def test_install_records_the_commit_and_every_start_names_it(
+    latest, monkeypatch, caplog
+):
+    """Install clones the latest commit: the record file holds that commit
+    and the repo URL, and probe() reports both. Opening Lyria then logs the
+    commit it starts from and records it as the last one that ran with keys,
+    package version included, so the next check has its floor. A start from
+    a checkout that fails the check leaves the floor alone."""
+    target = latest.root / "lyria"
+    monkeypatch.setattr(sidecar, "DEFAULT_PROJECT_PATH", target)
+    monkeypatch.setattr(sidecar, "_ensure_deps", lambda cfg: None)
+    with caplog.at_level("INFO"):
+        sidecar.start_install()
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            if sidecar.install_status()["status"] in ("done", "error"):
+                break
+            time.sleep(0.02)
+    assert sidecar.install_status()["status"] == "done", sidecar.install_status()
+    record = _record()
+    assert record["commit"] == latest.upstream.c
+    assert record["commit_event"] == "install"
+    assert record["repo_url"] == latest.upstream.uri
+    assert record["ran_version"] is None
+    assert f"at commit {latest.upstream.c}" in caplog.text
+    status = sidecar.probe()
+    assert status["checkout_record"]["commit"] == latest.upstream.c
+    assert status["head"] == latest.upstream.c
+    assert status["verify"]["ok"] is True
+
+    (target / "package.json").write_text(
+        '{"name": "lyria-3-pro", "version": "1.4.0"}\n', encoding="utf-8"
+    )
+    sidecar.add_key("gemini", "gemini-one")
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        env = _spawn_capturing_env(monkeypatch, target)
+    assert env["GEMINI_API_KEY"] == "gemini-one"
+    assert f"starting Lyria from {target} at commit {latest.upstream.c}" in caplog.text
+    assert "package lyria-3-pro@1.4.0" in caplog.text
+    record = _record()
+    assert record["commit_event"] == "start"
+    assert record["ran_commit"] == latest.upstream.c
+    assert record["ran_version"] == "1.4.0"
+
+    # The record survives what a backend restart forgets, and the floor it
+    # holds refuses an older package.json on the next start: no keys, the
+    # status says why, and the floor stays at 1.4.0.
+    sidecar._proc = None
+    (target / "package.json").write_text(
+        '{"name": "lyria-3-pro", "version": "1.3.9"}\n', encoding="utf-8"
+    )
+    env = _spawn_capturing_env(monkeypatch, target)
+    assert "GEMINI_API_KEY" not in env
+    check = sidecar.probe()["verify"]
+    assert check["ok"] is False
+    assert "older than 1.4.0" in check["reason"]
+    assert sidecar.verify_state()["ok"] is False
+    assert _record()["ran_version"] == "1.4.0"
+
+
+def test_head_is_read_from_the_git_folder_when_git_is_missing(latest, monkeypatch):
+    """A machine that lost git after Install still names the commit: HEAD
+    comes from .git itself, for a detached HEAD and for a branch, packed
+    refs included."""
+    checkout = _clone_install(latest)
+    _git("pack-refs", "--all", cwd=checkout)
+    monkeypatch.setattr(sidecar, "_git_path", lambda: None)
+    assert sidecar.checkout_head(checkout) == latest.upstream.c
+    _git("checkout", "-q", "--detach", latest.upstream.a, cwd=checkout)
+    assert sidecar.checkout_head(checkout) == latest.upstream.a
+    assert sidecar.checkout_head(latest.root / "nowhere") is None

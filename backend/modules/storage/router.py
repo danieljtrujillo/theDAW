@@ -751,6 +751,13 @@ def _lyria_provider_status() -> dict:
             summary = f"Install failed: {install.get('error')}"
         else:
             summary = " ".join(issues)
+        # The check a checkout passes before it is handed keys
+        # (sidecar.verify_checkout): a failed one runs with none, and the
+        # card says so in its summary and in its own alert line.
+        verify = status.get("verify")
+        if isinstance(verify, dict) and verify.get("ok") is False:
+            summary = f"{summary} No keys handed: {verify.get('reason')}".strip()
+        record = status.get("checkout_record") or {}
         return {
             "id": "lyria",
             "label": "Lyria 3 Pro",
@@ -780,6 +787,14 @@ def _lyria_provider_status() -> dict:
                 "project_path": status.get("project_path"),
                 "repo": status.get("repo"),
                 "repo_url": status.get("repo_url"),
+                # The commit the checkout is at, the one theDAW recorded at
+                # the last Install, Update or start, and the key check.
+                "head": status.get("head"),
+                "commit": record.get("commit"),
+                "commit_event": record.get("commit_event"),
+                "recorded_at": record.get("recorded_at"),
+                "ran_version": record.get("ran_version"),
+                "verify": verify if isinstance(verify, dict) else None,
                 "git": bool(status.get("git")),
                 "node": bool(status.get("node")),
                 "npm": bool(status.get("npm")),

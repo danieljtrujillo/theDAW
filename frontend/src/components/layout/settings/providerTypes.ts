@@ -55,10 +55,34 @@ export interface LyriaProviderExtras {
   project_path: string;
   repo: string;
   repo_url: string;
+  /** The commit the checkout is at now (null when it is not a git checkout). */
+  head?: string | null;
+  /** The commit theDAW recorded at the last Install, Update or start, which
+   *  of those recorded it, and when (sidecar.checkout_record). */
+  commit?: string | null;
+  commit_event?: 'install' | 'update' | 'start' | string | null;
+  recorded_at?: number | null;
+  /** package.json version of the last checkout that ran with keys. */
+  ran_version?: string | null;
+  /** The check a checkout passes before it is handed keys. `ok` false means
+   *  it runs with none, and `reason` says why. */
+  verify?: LyriaVerify | null;
   git: boolean;
   node: boolean;
   npm: boolean;
   listening: boolean;
+}
+
+/** sidecar.verify_checkout: whether the checkout gets the user's keys. */
+export interface LyriaVerify {
+  ok: boolean | null;
+  reason: string;
+  package_name?: string | null;
+  package_version?: string | null;
+  expected_name?: string;
+  floor_version?: string | null;
+  slots?: Record<string, boolean>;
+  keys_ts?: boolean;
 }
 
 export type ModelOption = ModelOptionStatus & {

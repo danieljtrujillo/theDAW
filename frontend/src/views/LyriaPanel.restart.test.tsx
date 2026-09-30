@@ -40,7 +40,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
 async function main(): Promise<void> {
-  const { LyriaPanel, lyriaCheckoutNote, lyriaUpdateNote } = await import('./LyriaPanel.tsx');
+  const { LyriaPanel, lyriaCheckoutNote, lyriaKeysNote, lyriaUpdateNote } = await import('./LyriaPanel.tsx');
 
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost:5173/',
@@ -295,6 +295,38 @@ async function main(): Promise<void> {
   assert.ok(!/text-\[(?:[0-9]|1[01])px\]/.test(host.innerHTML), 'text under 12px in the Lyria panel');
   assert.ok(!host.innerHTML.includes('font-mono'), 'small mono label in the Lyria panel');
   await act(async () => ownRoot.unmount());
+
+  // ── a child the backend handed no keys ──────────────────────────────────
+  // The checkout failed the check made before keys go in (here: its
+  // package.json names another package). The panel says so as an alert with
+  // the backend's reason, and the Update button is there to move it.
+  const withheld =
+    "The checkout at C:\\lyria is the package 'not-lyria', not lyria-3-pro, so theDAW hands it no keys.";
+  urlReply = {
+    url: 'http://127.0.0.1:5188',
+    mode: 'mock',
+    mock: true,
+    external: false,
+    checkout: { state: 'unchecked', reason: '' },
+    verify: { ok: false, reason: withheld },
+  };
+  const keylessRoot = createRoot(host);
+  await act(async () => {
+    keylessRoot.render(React.createElement(LyriaPanel));
+  });
+  await settle();
+  const keysAlert = Array.from<HTMLElement>(host.querySelectorAll<HTMLElement>('[role="alert"]')).find((el) =>
+    el.textContent?.includes('No keys handed'),
+  );
+  assert.ok(keysAlert, host.textContent ?? '');
+  assert.ok(keysAlert!.textContent?.includes(withheld), keysAlert!.textContent ?? '');
+  assert.ok(update(), 'Update stays available to move a checkout that got no keys');
+  assert.equal(lyriaKeysNote(undefined), '');
+  assert.equal(lyriaKeysNote(null), '');
+  assert.equal(lyriaKeysNote({ ok: null, reason: '' }), '', 'nothing known yet says nothing');
+  assert.equal(lyriaKeysNote({ ok: true, reason: '' }), '');
+  assert.equal(lyriaKeysNote({ ok: false, reason: 'x' }), 'No keys handed: x');
+  await act(async () => keylessRoot.unmount());
   console.log('LyriaPanel.restart.test.tsx: all assertions passed');
 }
 

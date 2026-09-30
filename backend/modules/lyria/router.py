@@ -158,6 +158,11 @@ async def url() -> dict:
         # What the last Update or latest-commit check found; ``reason`` says
         # why a checkout was left where it is, for the panel to show.
         "checkout": sidecar.checkout_state(),
+        # The check the spawn made before handing keys (sidecar.verify_state):
+        # ``ok`` False means this child runs with none, and ``reason`` says
+        # why. Only for a child this session spawned: an adopted one got
+        # whatever its own launcher gave it.
+        "verify": sidecar.verify_state() if owns else None,
     }
 
 
@@ -214,6 +219,7 @@ async def restart() -> dict:
         "mock": cfg.mock if owns else None,
         "external": not owns,
         "checkout": sidecar.checkout_state(),
+        "verify": sidecar.verify_state() if owns else None,
     }
 
 
@@ -266,6 +272,10 @@ async def update_status(check: bool = False) -> dict:
         "checkout": sidecar.checkout_state(),
         "latest": latest,
         "compat": await asyncio.to_thread(sidecar.checkout_compat, cfg.project_path),
+        # The commit the last Install, Update or start recorded, and whether
+        # the checkout gets keys as it is now.
+        "record": await asyncio.to_thread(sidecar.checkout_record),
+        "verify": await asyncio.to_thread(sidecar.verify_checkout, cfg.project_path),
     }
 
 
