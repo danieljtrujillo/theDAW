@@ -261,6 +261,10 @@ export const useStudioStore = create<StudioStoreState>()((set, get) => ({
     const form = new FormData();
     form.append('audio', source);
     form.append('plugin_path', pluginPath);
+    // Which plugin inside the file: a .vst3 can hold several, the live host
+    // loads the one the entry names, and theDAW's render host loads the first
+    // one when it is given no name.
+    if (pluginName) form.append('plugin_name', pluginName);
     form.append('params', JSON.stringify(params || {}));
     if (rawState) form.append('raw_state', rawState);
     // Only the 'thedaw' case is sent: absent means the backend's existing

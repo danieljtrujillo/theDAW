@@ -36,6 +36,43 @@ GOOD_CONFIDENCE = 0.6
 _REPEAT_RE = re.compile(r"(.)\1{2,}")
 _KEEP_RE = re.compile(r"[^a-z0-9]+")
 
+# Letters NFKD leaves whole: a ligature or a letter with a stroke is one code
+# point with no base letter under it, so stripping accents alone deleted it
+# ("Cæsar" -> "csar", "Øresund" -> "resund").
+_LETTER_FOLD = str.maketrans(
+    {
+        "æ": "ae",
+        "Æ": "AE",
+        "œ": "oe",
+        "Œ": "OE",
+        "ß": "ss",
+        "ø": "o",
+        "Ø": "O",
+        "đ": "d",
+        "Đ": "D",
+        "ł": "l",
+        "Ł": "L",
+        "þ": "th",
+        "Þ": "TH",
+        "ð": "d",
+        "Ð": "D",
+        "ı": "i",
+    }
+)
+# Latin writes one sound two ways: i/j and u/v are the same letters in
+# different editions ("iam"/"jam", "uirum"/"virum"), and whisper picks one.
+_LATIN_FOLD = str.maketrans({"j": "i", "v": "u"})
+
+
+def fold_letters(s: str) -> str:
+    """Spell out the letters accent-stripping cannot reach (``æ`` -> ``ae``)."""
+    return (s or "").translate(_LETTER_FOLD)
+
+
+def is_latin(language: Optional[str]) -> bool:
+    return str(language or "").strip().lower() in ("la", "lat", "latin")
+
+
 AsrWord = dict[str, Any]
 
 
@@ -53,27 +90,34 @@ class _Timed:
     end: int
 
 
-def normalize_token(s: str) -> str:
+def normalize_token(s: str, latin: bool = False) -> str:
     """NFKD, casefold, strip accents and everything but [a-z0-9], collapse
     3+ repeated letters to 2 ("yeahhh" -> "yeahh"), drop apostrophes
-    ("don't" -> "dont")."""
-    decomposed = unicodedata.normalize("NFKD", s or "")
+    ("don't" -> "dont"). Ligatures are spelled out first ("Cæsar" ->
+    "caesar"); ``latin`` also folds j to i and v to u, so "Iūlius" and
+    whisper's "julius" are one word."""
+    decomposed = unicodedata.normalize("NFKD", fold_letters(s))
     stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     low = stripped.casefold().replace("’", "").replace("'", "")
+    if latin:
+        low = low.translate(_LATIN_FOLD)
     kept = _KEEP_RE.sub("", low)
     return _REPEAT_RE.sub(lambda m: m.group(1) * 2, kept)
 
 
-def tokenize(lines: list[LyricLine]) -> list[Token]:
+def tokenize(lines: list[LyricLine], latin: bool = False) -> list[Token]:
     """Alignable tokens: lyric lines only, words split on hyphens, empty
-    normalizations skipped."""
+    normalizations skipped. A Latin word is never split: Latin writes no
+    compound with a hyphen, so its hyphens are sung syllables ("Ky-ri-e") or
+    an enclitic set off ("arma-que"), and whisper hears one word."""
     tokens: list[Token] = []
     for li, line in enumerate(lines):
         if line.kind != "lyric" or not line.text.strip():
             continue
         for wi, word in enumerate(line.words):
-            for part in word.text.split("-"):
-                norm = normalize_token(part)
+            parts = [word.text] if latin else word.text.split("-")
+            for part in parts:
+                norm = normalize_token(part, latin)
                 if norm:
                     tokens.append(Token(li, wi, part, norm))
     return tokens
@@ -121,7 +165,10 @@ def _sec_ms(sec: Any) -> int:
 
 
 def _heard_in_gaps(
-    user: list[str], asr_raw: list[str], anchors: list[tuple[int, int]]
+    user: list[str],
+    asr_raw: list[str],
+    anchors: list[tuple[int, int]],
+    latin: bool = False,
 ) -> dict[int, str]:
     """For every user token that did not anchor: the whisper words that sit in
     the same gap between anchors, shared out proportionally (``""`` when
@@ -148,7 +195,7 @@ def _heard_in_gaps(
                 hi = lo + 1  # more user words than heard words: share one
             lo, hi = min(lo, n_asr - 1), min(hi, n_asr)
             text = " ".join(asr_raw[j].strip() for j in gap_asr[lo:hi]).strip()
-            if normalize_token(text) == user[ui]:
+            if normalize_token(text, latin) == user[ui]:
                 continue
             heard[ui] = text
     return heard
@@ -267,21 +314,26 @@ def _clamp(placed: list[Optional[_Timed]], duration_ms: int) -> None:
 
 
 def align_words(
-    lines: list[LyricLine], asr_words: list[AsrWord], duration_ms: int
+    lines: list[LyricLine],
+    asr_words: list[AsrWord],
+    duration_ms: int,
+    language: str = "",
 ) -> tuple[list[LyricLine], LyricsStats]:
     """Return copies of ``lines`` with word and line timings transferred from
     ``asr_words`` (sidecar shape: ``{word, start, end}`` in SECONDS), plus
-    the match statistics."""
+    the match statistics. ``language`` is the lyric's: Latin words are
+    compared with their spelling variants folded."""
+    latin = is_latin(language)
     out = [line.model_copy(deep=True) for line in lines]
     for line in out:
         for word in line.words:
             word.heard = None
-    tokens = tokenize(out)
+    tokens = tokenize(out, latin)
     asr: list[tuple[str, int, int]] = []
     asr_raw: list[str] = []
     for w in asr_words or []:
         raw = str(w.get("word") or "")
-        norm = normalize_token(raw)
+        norm = normalize_token(raw, latin)
         if not norm or w.get("start") is None or w.get("end") is None:
             continue
         asr.append((norm, _sec_ms(w["start"]), _sec_ms(w["end"])))
@@ -301,7 +353,7 @@ def align_words(
     for ui, aj in anchors:
         matched[ui] = _Timed(asr[aj][1], asr[aj][2])
     stats.matched = len(matched)
-    heard = _heard_in_gaps(user_norms, asr_raw[: len(asr_norms)], anchors)
+    heard = _heard_in_gaps(user_norms, asr_raw[: len(asr_norms)], anchors, latin)
 
     if duration_ms <= 0:
         duration_ms = max(a[2] for a in asr)

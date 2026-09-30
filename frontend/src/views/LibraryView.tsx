@@ -13,7 +13,8 @@ import { importUrlToLibrary } from '../lib/onlineImport';
 import { importFolderToLibrary } from '../lib/folderImport';
 import { formatDuration, formatSize } from '../lib/libraryFormat';
 import { startQueue } from '../state/playlistQueue';
-import { DESKTOP_DROP_ORIGIN, LIBRARY_IDS_MIME, MIDI_ID_MIME, STEM_ID_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
+import { DESKTOP_DROP_ORIGIN, LIBRARY_IDS_MIME, MIDI_ID_MIME, STEM_ID_MIME, STEM_SONG_MIME, dropHasLibraryOrFiles, entriesFromDrop } from '../lib/libraryDrop';
+import { linkSongTime } from '../lib/songTimeLink';
 import { midiRowPart, type LibraryMidiRow } from '../lib/libraryIndex';
 import { ContextMenu, useContextMenu, type ContextMenuItem } from '../components/ui/ContextMenu';
 import { useConvertMenu } from '../convert/ConvertMenu';
@@ -69,6 +70,8 @@ import {
   sendMidiIdToTarget,
   stemRowToSendable,
 } from '../lib/sendToTargets';
+import { stemMidiRows, stemMidisToEdit, stemMidisToRoll } from '../lib/stemMidiSet';
+import { getGlobalVoice } from '../lib/soundfontEngine';
 
 
 const formatDate = (iso: string): string => {
@@ -1355,6 +1358,7 @@ export const LibraryView: React.FC<{ onSwitchTab?: (tab: string) => void; onExpa
         startSec: tail,
         color: trackColor,
         libraryEntryId: entry.id,
+        songTime: linkSongTime(entry.id),
       });
       editor.cachePeaks(clipId, peaks);
     } catch (e) {
@@ -3287,6 +3291,10 @@ const SubTabRow = React.memo<{
   // lookup can never miss the id and die silently.
   const onDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(isMidi ? MIDI_ID_MIME : STEM_ID_MIME, rowId);
+    // A stem is its song's time: the song's entry id goes along, so the clip
+    // it lands as in EDIT reads the song's tempo, beats and downbeats.
+    const songId = isMidi ? '' : String(row.entry_id ?? row.parent_id ?? '');
+    if (songId) e.dataTransfer.setData(STEM_SONG_MIME, songId);
     e.dataTransfer.setData('text/plain', label);
     e.dataTransfer.effectAllowed = 'copy';
   };
@@ -3344,7 +3352,8 @@ const SubTabRow = React.memo<{
 SubTabRow.displayName = 'SubTabRow';
 
 
-const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder, onMutated, selectedId, onSelectParent }) => {
+/** The Stems and MIDI sub-tabs' list: each song's rows, with the row menu (exported for its mount test). */
+export const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, placeholder, onMutated, selectedId, onSelectParent }) => {
   const parentIds = Object.keys(byParent);
   // Shared ContextMenu primitive — fixes drift under .dense-layout
   // zoom and gives consistent close-on-outside behavior across the
@@ -3444,6 +3453,11 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
   if (payload?.kind === 'midi') {
     const sendable = midiIdToSendable(payload.midiId, payload.label);
     menuTitle = `MIDI · ${payload.label}`;
+    // The song this row belongs to, and its stem MIDI rows: every row of its group but the full mix (lib/stemMidiSet).
+    const parentId = parentIds.find((pid) => byParent[pid].some((r) => String(r.id ?? '') === payload.midiId));
+    const stemRows = parentId ? stemMidiRows(byParent[parentId].map((r) => ({ ...r, id: String(r.id ?? '') }))) : [];
+    const songTitle = (parentId ? parentTitles[parentId] : undefined) || payload.label;
+    const stemHint = stemRows.length ? `${stemRows.length} stem${stemRows.length === 1 ? '' : 's'}` : 'no stems';
     menuItems = [
       {
         type: 'item',
@@ -3456,6 +3470,25 @@ const SubTabList: React.FC<SubTabListProps> = ({ byParent, parentTitles, kind, p
         label: 'Send to step sequencer',
         icon: <ListOrdered className="w-3 h-3" />,
         onSelect: () => { void sendMidiIdToTarget(payload.midiId, 'step-seq'); },
+      },
+      { type: 'separator' },
+      {
+        type: 'item',
+        label: 'All stems to piano roll',
+        icon: <Piano className="w-3 h-3" />,
+        hint: stemHint,
+        title: "Every stem MIDI of this song into the piano roll, one part a stem, each on its stem's instrument and at the seconds it was transcribed at",
+        disabled: stemRows.length === 0,
+        onSelect: () => { void stemMidisToRoll(stemRows, songTitle); },
+      },
+      {
+        type: 'item',
+        label: 'All stems to EDIT as tracks',
+        icon: <Layers className="w-3 h-3" />,
+        hint: stemHint,
+        title: "Every stem MIDI of this song on an EDIT track of its own from the start of the timeline, each on its stem's instrument, the drums on a drum track",
+        disabled: stemRows.length === 0,
+        onSelect: () => { void stemMidisToEdit(stemRows, songTitle, { global: getGlobalVoice }); },
       },
       { type: 'separator' },
       {

@@ -83,6 +83,9 @@ def test_enrichment_writes_the_probed_name_onto_the_entry(monkeypatch):
     info = Vst3PluginInfo(name="FabFilter Pro-Q 4", path="/plugins/pq4.vst3")
     assert info.display_name == ""
     assert info.identifier == ""
+    # The load probe's own path: no native host to list the module first (a
+    # developer machine's built host would otherwise answer for it).
+    monkeypatch.setattr(vst_scanner, "_host_command", lambda: None)
     monkeypatch.setattr(
         vst_scanner,
         "_probe_subprocess",

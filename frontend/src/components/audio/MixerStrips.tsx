@@ -30,7 +30,7 @@
  * it or from any other reference DAW is present here.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Volume2, VolumeX, X } from 'lucide-react';
+import { Plus, SlidersHorizontal, Volume2, VolumeX, X } from 'lucide-react';
 import {
   beginUndoStep,
   useEditorStore,
@@ -56,6 +56,11 @@ import {
 import { requireFeature } from '../../notices/featureGateStore';
 import { BarMeter, dbToNorm, fmtLevel } from './levels/meterModel';
 import { SlideTrack } from './SlideTrack';
+import { FxChainList, openEffectWindow, openVstEditorForScope, type FxScope } from './EffectWindows';
+import { PopoverPortal } from './PopoverPortal';
+import { useVstStore } from '../../state/vstStore';
+import type { ChainEntry } from '../../state/effectChainStore';
+import type { Vst3PluginInfo } from '../../lib/vstClient';
 
 /* ────────────────────────────────────────────────────────────────────────────
    Model helpers — pure, exported for MixerStrips.test.ts. Nothing below this
@@ -266,7 +271,7 @@ const KeyBadge: React.FC<{
   const list = targets.join(', ');
   return (
     <span
-      className="rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[10px] font-mono uppercase tracking-wider text-amber-300 truncate"
+      className="rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 font-display text-xs font-bold uppercase tracking-wider text-amber-300 truncate"
       title={`${name} keys a sidechain effect on ${list}`}
     >
       {`KEY → ${list}`}
@@ -497,6 +502,133 @@ const OutputPicker: React.FC<{
   </div>
 );
 
+/**
+ * A bus's insert rack: the FX key on its strip and the rack it opens, the same
+ * list every EDIT rack uses (built-in effects, VST3s, the Ares surface), so a
+ * bus takes a VST3 exactly as a track does: add it from the scan, open its own
+ * editor, bypass, reorder, remove. Live, the bus strip hosts it; a freeze and
+ * every export print it at its place in the bus chain.
+ */
+export const BusFxRack: React.FC<{ bus: EditorBus }> = ({ bus }) => {
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const keyRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const addBusEffect = useEditorStore((s) => s.addBusEffect);
+  const addBusVst = useEditorStore((s) => s.addBusVst);
+  const vstPlugins = useVstStore((s) => s.plugins);
+  const vstScanning = useVstStore((s) => s.scanning);
+  const scanVst = useVstStore((s) => s.scan);
+  const scope: FxScope = { kind: 'bus', busId: bus.id };
+  const panelId = `mixer-bus-fx-${bus.id}`;
+  const open = at !== null;
+
+  // Escape, or a press outside the rack, its key and every effect window it
+  // opened (each is a dialog of its own), closes the rack.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setAt(null);
+      keyRef.current?.focus({ preventScroll: true });
+    };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Element | null;
+      if (!t) return;
+      if (panelRef.current?.contains(t) || keyRef.current?.contains(t)) return;
+      if (t.closest?.('[role="dialog"]')) return;
+      setAt(null);
+    };
+    const timer = window.setTimeout(() => {
+      window.addEventListener('mousedown', onDown);
+    }, 0);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const openEntry = (sc: FxScope, entry: ChainEntry, origin?: { x: number; y: number }) =>
+    openEffectWindow(sc, entry, openVstEditorForScope, origin);
+
+  // Clicking a plugin in the browser inserts it once and opens it; one already
+  // on the bus is opened, not added again (EDIT's track rack does the same).
+  const addAndOpenVst = (pl: Vst3PluginInfo) => {
+    const chainOf = (): ChainEntry[] => useEditorStore.getState().buses.find((b) => b.id === bus.id)?.fxChain ?? [];
+    let entry = chainOf().find((e) => e.vst?.plugin_path === pl.path);
+    if (!entry) {
+      addBusVst(bus.id, { plugin_path: pl.path, plugin_name: pl.name });
+      entry = [...chainOf()].reverse().find((e) => e.vst?.plugin_path === pl.path);
+    }
+    if (entry) openEntry(scope, entry);
+  };
+
+  const count = bus.fxChain.length;
+  return (
+    <>
+      <button
+        ref={keyRef}
+        type="button"
+        onClick={() => {
+          if (open) { setAt(null); return; }
+          const r = keyRef.current?.getBoundingClientRect();
+          setAt(r ? { x: Math.round(r.left), y: Math.round(r.bottom) + 4 } : { x: 16, y: 96 });
+        }}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        aria-label={`${bus.name} inserts${count ? `, ${count}` : ''}`}
+        title="The bus's insert rack: built-in effects and VST3 plugins"
+        className={`flex items-center justify-center gap-1 rounded-md border px-1.5 py-0.5 font-display text-xs font-bold uppercase tracking-wider ${
+          open || count > 0
+            ? 'border-purple-500/40 bg-purple-500/15 text-purple-200'
+            : 'border-white/10 bg-white/5 text-zinc-400 hover:text-white'
+        }`}
+      >
+        <SlidersHorizontal className="w-3 h-3" />
+        FX{count > 0 ? ` ${count}` : ''}
+      </button>
+      {at && (
+        <PopoverPortal
+          x={at.x}
+          y={at.y}
+          innerRef={panelRef}
+          maxHeight="70vh"
+          className="fixed z-50 w-72 hardware-card bg-black/90 border border-purple-500/30 rounded-lg shadow-2xl shadow-purple-900/40 p-3"
+        >
+          <div id={panelId} role="dialog" aria-label={`${bus.name} inserts`} className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+              <span className="font-display text-xs font-bold uppercase tracking-wider text-zinc-400 truncate">
+                Bus FX · <span className="text-purple-200">{bus.name}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setAt(null)}
+                aria-label={`Close ${bus.name} inserts`}
+                title="Close"
+                className="p-0.5 rounded text-zinc-500 hover:text-white hover:bg-white/10 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <FxChainList
+              scope={scope}
+              onOpenEntry={openEntry}
+              onAddEffect={(effectId) => addBusEffect(bus.id, effectId)}
+              onAddVst={addAndOpenVst}
+              vstPlugins={vstPlugins}
+              vstScanning={vstScanning}
+              onRescanVst={() => void scanVst(true)}
+              emptyHint="No inserts on this bus yet — add one below."
+            />
+          </div>
+        </PopoverPortal>
+      )}
+    </>
+  );
+};
+
 /** The send list for one node: a destination picker + a gain fader per send. */
 const SendList: React.FC<{
   graph: RoutingGraph;
@@ -518,7 +650,7 @@ const SendList: React.FC<{
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-600">sends</span>
+        <span className="font-display text-xs font-bold uppercase tracking-wider text-zinc-400">sends</span>
         <button
           type="button"
           onClick={() => {
@@ -847,7 +979,7 @@ export const MixerStrips: React.FC = () => {
                     }}
                     aria-label={`Confirm removing bus ${b.name}`}
                     title="Everything feeding it goes back to the master"
-                    className="rounded border border-red-500/50 bg-red-500/20 px-1 text-[10px] font-bold text-red-300"
+                    className="rounded border border-red-500/50 bg-red-500/20 px-1 text-xs font-bold text-red-300"
                   >
                     Confirm
                   </button>
@@ -869,6 +1001,8 @@ export const MixerStrips: React.FC = () => {
             <span aria-live="polite" className="sr-only">
               {armedDelete === b.id ? `Remove ${b.name}? Confirm or cancel` : ''}
             </span>
+            {/* The inserts come first, as the signal meets them: rack, then fader, then out. */}
+            <BusFxRack bus={b} />
             <OutputPicker
               nodeId={b.id}
               name={b.name}
@@ -895,7 +1029,7 @@ export const MixerStrips: React.FC = () => {
 
         <div className={`${STRIP} border-[rgb(var(--et-accent))]/40`}>
           <span className="truncate text-xs font-bold text-zinc-200">Master</span>
-          <p className="text-[10px] font-mono uppercase tracking-wider text-zinc-600">end of chain</p>
+          <p className="font-display text-xs font-bold uppercase tracking-wider text-zinc-400">end of chain</p>
           {/* The master reuses the Levels tab's existing post-sum tap rather
               than hanging a second analyser on the same signal — which is also
               why both taps are refcounted. */}

@@ -25,11 +25,13 @@ from pydantic import BaseModel
 from backend.modules.vst.scanner import (
     Vst3PluginInfo,
     carry_over_metadata,
+    list_plugin_classes,
     scan_vst3_directories,
     load_cached_scan,
     read_cache_entries,
-    save_scan_cache,
+    save_scan,
     start_background_enrichment,
+    vst3_install_folder,
 )
 from backend.modules.vst.host import param_key, list_builtin_effects
 
@@ -47,6 +49,11 @@ from backend.modules.vst.isolation import (
     render_instrument,
 )
 from backend.modules.vst.live_host import HostLocator, _os_reason
+from backend.modules.vst.param_automation import (
+    AUTOMATION_BLOCK_SIZE,
+    ParamAutomation,
+    parse_param_automation,
+)
 from backend.modules.vst import path_policy
 from backend.modules.vst.path_policy import (
     PluginPathError,
@@ -300,6 +307,9 @@ class ProcessRequest(BaseModel):
 
 class ScanResponse(BaseModel):
     plugins: list[dict]
+    # The folder an empty plugin list tells the user to install into: the
+    # first standard VST3 folder the scan reads on this machine.
+    install_folder: str = ""
 
 
 class EditorRequest(BaseModel):
@@ -340,9 +350,13 @@ def scan_vst3(
     """Scan standard VST3 directories.
 
     Serves the cache when it is still valid for the current contents of the scan
-    roots; ``refresh=true`` forces a fresh walk and gives previously failed
-    plugins another chance. Plugins this host cannot load are withheld unless
-    ``include_unloadable`` asks for them, so the UI never offers a dead tile.
+    roots; ``refresh=true`` forces a fresh walk and gives plugins that failed to
+    load, or ran out of load-probe timeouts, another chance. A fresh walk lists
+    each new module's classes through the native host before it answers, so
+    the answer already says which plugins are instruments; ``enrich=false``
+    opens no plugin at all. Plugins this host cannot load (the background load
+    probe failed on them, or died) are withheld unless ``include_unloadable``
+    asks for them, so the UI never offers a dead tile.
 
     Gated: this hands a caller the absolute plugin paths of this machine, and
     enumerating installed plugins is itself information this machine's
@@ -372,14 +386,24 @@ def scan_vst3(
     if plugins is None:
         plugins = scan_vst3_directories()
         carry_over_metadata(plugins, read_cache_entries(), retry_failed=refresh)
-        save_scan_cache(plugins)
+        if enrich:
+            # A module's factory names its classes' vendor, version and
+            # instrument/effect category in well under a second, so the list
+            # the user opened says which plugins are instruments.
+            list_plugin_classes(plugins)
+        # A rescan is counted as it is saved, so a metadata worker still
+        # running from an earlier scan does not write back the verdicts the
+        # rescan just dropped, and takes up the rescan's list when it is done.
+        save_scan(plugins, rescan=refresh)
     body = _plugin_dicts(plugins, include_unloadable)
     if enrich:
-        # Vendor/version/category only come from opening the plugin, which is far
-        # too slow to hold a request; the worker fills the cache in and the next
-        # scan serves it.
+        # Every new plugin is still loaded once through pedalboard, out of
+        # process, to learn whether the server's own host survives it, and
+        # that load classifies what the native host could not list. It is far
+        # too slow to hold a request; the worker fills the cache in and the
+        # next scan serves it.
         start_background_enrichment(plugins)
-    return ScanResponse(plugins=body)
+    return ScanResponse(plugins=body, install_folder=vst3_install_folder())
 
 
 @router.get("/scan/{path:path}", response_model=ScanResponse)
@@ -415,7 +439,10 @@ def scan_vst3_custom(path: str, request: Request, include_unloadable: bool = Fal
     require_loopback_launch_or_pairing_token(request)
     resolved = _validated_scan_directory(path)
     plugins = scan_vst3_directories(extra_paths=[str(resolved)])
-    return ScanResponse(plugins=_plugin_dicts(plugins, include_unloadable))
+    return ScanResponse(
+        plugins=_plugin_dicts(plugins, include_unloadable),
+        install_folder=vst3_install_folder(),
+    )
 
 
 @router.post("/load")
@@ -720,6 +747,7 @@ def _render_with_thedaw_host(
     warnings: list[str],
     midi_events: list[tuple[int, bytes]] | None = None,
     tail_seconds: str = "auto",
+    automation: list[ParamAutomation] | None = None,
 ) -> bytes:
     """Render the audio already staged at ``in_path`` through
     ``thedaw-vst-host --render``.
@@ -763,10 +791,19 @@ def _render_with_thedaw_host(
             "--out",
             str(out_path),
             "--block-size",
-            "1024",
+            # A parameter moves at the start of a block, so an automated print
+            # runs shorter blocks: that is the time resolution of its automation.
+            str(AUTOMATION_BLOCK_SIZE) if automation else "1024",
             "--tail-seconds",
             tail_seconds,
         ]
+        if automation:
+            automation_path = work / "automation.json"
+            automation_path.write_text(
+                json.dumps([a.to_host_json() for a in automation]), encoding="utf-8"
+            )
+            temp_paths.append(automation_path)
+            cmd += ["--automation-json", str(automation_path)]
         if midi_events:
             # An instrument: the MIDI it plays, one "<frame> <status> <data...>" line each.
             midi_path = work / "midi.txt"
@@ -876,6 +913,7 @@ async def process_file(
     raw_state: str = Form(""),
     state_host: str = Form(""),
     plugin_name: str = Form(""),
+    automation: str = Form(""),
 ):
     """Process an UPLOADED audio file through one VST3 plugin; return WAV bytes.
 
@@ -889,8 +927,17 @@ async def process_file(
     Gated: this loads and runs a plugin, same as ``/load`` and ``/process``,
     and a paired device passes the same way (MIX on a device opened from the
     share link renders its VST stages here).
+
+    ``automation`` moves the plugin's parameters as the file plays: EDIT's
+    automation lanes on this insert, as curves over the file's frames (see
+    ``param_automation``). Both renderers apply it block by block; a body that
+    is not that shape is refused, never rendered without it.
     """
     require_loopback_launch_or_pairing_token(request)
+    try:
+        param_automation = parse_param_automation(automation)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid automation: {e}")
     import numpy as np
 
     from backend.lib.audio_io import load_audio_array, save_audio
@@ -987,6 +1034,7 @@ async def process_file(
                 state_blob,
                 host_params,
                 host_warnings,
+                automation=param_automation or None,
             )
         finally:
             # Covers the upload read above as well as the render below — a
@@ -1024,6 +1072,9 @@ async def process_file(
 
     try:
         # Off the event loop: the worker runs as long as the plugin takes.
+        # The automation keyword goes only where there is automation, so the
+        # plain call keeps its six-argument shape.
+        automation_kw = {"automation": param_automation} if param_automation else {}
         processed = await asyncio.to_thread(
             process_with_plugin,
             plugin_path,
@@ -1032,6 +1083,7 @@ async def process_file(
             param_map,
             raw_state or None,
             warnings,
+            **automation_kw,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

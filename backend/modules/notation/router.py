@@ -783,16 +783,13 @@ def _artifact_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def _analysis_bpm(store: Any, entry_id: str) -> Optional[float]:
-    """The entry's analysed tempo, or None when its analysis row has no
-    positive BPM."""
-    analysis = store.db.get_analysis(entry_id)
-    if not analysis or not analysis.get("bpm"):
-        return None
-    try:
-        bpm = float(analysis["bpm"])
-    except (TypeError, ValueError):
-        return None
-    return bpm if bpm > 0 else None
+    """The entry's analysed tempo, checked the way the MIDI runner checks the
+    tempo it stamps on the entry's MIDI (``analysis.tempo.analysis_tempo``):
+    an estimate outside the sane range gives way to the beat list's own
+    tempo. None when neither is usable."""
+    from backend.modules.analysis.tempo import analysis_tempo
+
+    return analysis_tempo(store.db.get_analysis(entry_id)).bpm
 
 
 def _find_lead_sheet(

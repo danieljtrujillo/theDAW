@@ -1,0 +1,10 @@
+{
+  "name": "sections",
+  "label": "Sections",
+  "enabled": true,
+  "icon": "ListTree",
+  "sidebar": false,
+  "api_prefix": "/api/sections",
+  "backend": true,
+  "description": "The song section finder: on a library entry's bar grid it reads per-bar stem activity, chroma, loudness and spectral novelty, finds boundaries by novelty and repetition (self-similarity), labels sections with repeat letters (A, B, A') and roles (intro, verse, chorus, drop, break, bridge, outro) with a confidence per boundary, stores them per entry with the user's names, and fills the Shard Index's section field. numpy + librosa, no model."
+}

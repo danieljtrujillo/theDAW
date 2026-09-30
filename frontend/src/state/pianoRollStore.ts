@@ -33,6 +33,7 @@ import { sanitizeLoop, type RollLoop } from '../lib/rollTransport';
 import { DEFAULT_ROLL_SNAP, isRollSnapId, type RollSnapId } from '../lib/rollSnap';
 import { sanitizeFermata, sanitizeRollTempoMap, startTempoOf, tickBeat } from '../lib/rollTempo';
 import { clampTempoBpm, type TempoEvent } from '../lib/tempoMap';
+import { conformBends, conformControls, conformFiguredBass, conformNotes, conformTicked, sameTiming } from '../lib/tempoConform';
 // lib/rollTracks imports only the RollTrack and PianoNote TYPES back from here,
 // erased at compile, so this too is a one-way runtime dependency.
 import {
@@ -51,12 +52,15 @@ import {
   isDefaultPartName,
   isPercussionPart,
   makeRollTrack,
+  partVstUid,
   nextPartColor,
   nextPartName,
   sanitizeRollTracks,
 } from '../lib/rollTracks';
 import { orchestraInstrument, type OrchestraInstrument } from '../lib/orchestra';
-import { isArticulation, type Articulation } from '../lib/articulationMap';
+import { GM_NAMES } from '../lib/gmInstruments';
+import { isArticulation, type Articulation, type Vst3SwitchMode } from '../lib/articulationMap';
+import type { ChainEntry, VstNode, VstStateHost } from './effectChainStore';
 import { buildExpression, withExpressionControls } from '../lib/clipNotes/expression';
 import { sanitizeNoteExpression } from '../lib/noteExpression';
 import {
@@ -252,6 +256,33 @@ export interface RollTrack {
    * back into it. At most one part of a roll carries it. Absent when false.
    */
   cantusFirmus?: boolean;
+  /**
+   * True for a part whose notes were timed in seconds against audio: a
+   * library song's MIDI (a stem run through a transcriber) or a take. MATCH
+   * gives the roll the song's tempo and these parts keep their seconds
+   * (setTempoKeepingTime), so they stay on the audio they came from; every
+   * other part keeps its place in the bar. A write that replaces the part's
+   * notes from anywhere else (a generator, a file) clears it. Absent when false.
+   */
+  fromAudio?: boolean;
+  /**
+   * The VST3 instrument the part plays through: a `vst3` chain entry, as an
+   * EDIT track's instrument slot holds one (its `vst` names the plugin and
+   * carries the state captured from the plugin's own editor). PLAY, a note
+   * drawn or clicked on the keyboard and a hardware key sound through the
+   * plugin's live host session (state/rollInstruments), keyed by the entry's
+   * id; the EDIT key sends it with the part onto its EDIT track, where every
+   * bounce, freeze and export prints it. `program` stays the part's General
+   * MIDI program: a MIDI export writes it, and the part plays it while the
+   * plugin cannot (it is still opening, it failed to load, or no live host is
+   * installed). `enabled: false` keeps the plugin and its state while the part
+   * plays its program. Absent: the part plays its program.
+   */
+  vstInstrument?: ChainEntry;
+  /** How the part's VST3 instrument is told its notes' articulations
+   *  (lib/articulationMap): a keyswitch note from C0 up, or 'uacc' on CC 32.
+   *  Absent: keyswitch. */
+  articulationSwitch?: Vst3SwitchMode;
 }
 
 /**
@@ -281,6 +312,12 @@ export interface RollPartRef {
   figuredBass?: FiguredBassMark[];
   /** The part is the roll's cantus firmus (RollTrack `cantusFirmus`). Absent when it is not. */
   cantusFirmus?: boolean;
+  /** The part's notes were timed against audio (RollTrack `fromAudio`). Absent when they were not. */
+  fromAudio?: boolean;
+  /** The part's VST3 instrument and the state its editor captured (RollTrack `vstInstrument`). Absent when it has none. */
+  vstInstrument?: ChainEntry;
+  /** How that instrument hears articulations (RollTrack `articulationSwitch`). Absent: keyswitch. */
+  articulationSwitch?: Vst3SwitchMode;
 }
 
 /** What loadFromClip takes to open a clip together with the clips of its other parts. */
@@ -308,6 +345,14 @@ export interface RollPartImport {
   instrumentId?: string;
   program?: number | null;
   percussion?: boolean;
+  /** The notes were timed against audio (RollTrack `fromAudio`); left out, the part is not marked. */
+  fromAudio?: boolean;
+  /**
+   * `instrumentId`, else `program`, is the voice of the file's stem
+   * (lib/stemRole, RollMidiPart `stemRole`): the notes are that stem's, so the
+   * part takes it even when it has an instrument of its own.
+   */
+  stemInstrument?: boolean;
 }
 
 /** How importNotes treats the document's maps (see importNotes). */
@@ -456,7 +501,9 @@ interface PianoRollState {
    * their clocks on its identity. Part of the document: undo tracks it, a
    * bounce copies it onto the clip as `sourceTempoMap`, and MIDI export writes it.
    * MATCH writes a song's tempo changes here, so its bar lines land on the
-   * song's downbeats while the notes keep their steps.
+   * song's downbeats while the notes keep their steps; the notes of a part
+   * timed against the song's audio (RollTrack `fromAudio`) keep their seconds
+   * instead (setTempoKeepingTime).
    */
   tempoMap: TempoEvent[];
   /** Total grid length in 16th-note steps. */
@@ -592,6 +639,12 @@ interface PianoRollState {
   /** Drop the flags and the figures the harmony row shows. */
   clearVoiceLeading: () => void;
   /**
+   * Show a song's chords in the harmony row (lib/songSections
+   * chordTrackHarmony: its chord symbols at their ticks) in place of the
+   * figures it had, and open the row. The flags stay. Analysis, not undo history.
+   */
+  showSongChords: (chords: readonly RollChordLabel[]) => void;
+  /**
    * Send the roll's parts to the voice-leading checker (composerApi.check):
    * `opts.partIds` when two or more are given, else the parts named Soprano,
    * Alto, Tenor and Bass when two or more are, else the four highest parts
@@ -630,6 +683,26 @@ interface PianoRollState {
   realizeFiguredBass: (partId?: string) => Promise<RollWriteResult>;
   /** Mark part `partId` as the cantus firmus (the mark leaves any other part), or clear the mark with null. One undo step. */
   setCantusFirmus: (partId: string | null) => void;
+  /**
+   * Play part `id` through the VST3 instrument `plugin` (RollTrack
+   * `vstInstrument`), or with null take the instrument away. The part keeps
+   * its program: a MIDI export writes it, and the part plays it whenever the
+   * plugin cannot. Choosing the plugin the part holds switched off switches it
+   * back on, state and all; another plugin starts at its defaults, under a new
+   * entry id (a session of its own). One undo step; none when nothing changes.
+   */
+  setTrackVstInstrument: (id: string, plugin: Pick<VstNode, 'plugin_path' | 'plugin_name'> | null) => void;
+  /** Switch part `id`'s VST3 instrument on or off, keeping the plugin and its state. One undo step; none when nothing changes. */
+  setTrackVstEnabled: (id: string, enabled: boolean) => void;
+  /**
+   * Store the state the live host captured from the plugin of part instrument
+   * `entryId` (the instrument's entry id, in whichever part holds it). Not an
+   * undo step: the plugin holds its state, and an undo cannot move it back, so
+   * undo and redo keep the state a part's instrument has now (restoredParts).
+   */
+  setPartVstState: (entryId: string, rawState: string, stateHost: VstStateHost) => void;
+  /** How part `id`'s VST3 instrument hears articulations: keyswitch notes from C0, or UACC on CC 32. One undo step. */
+  setTrackArticulationSwitch: (id: string, mode: Vst3SwitchMode) => void;
   /**
    * Write a plan's (composerApi.plan) four voices into the parts named
    * Soprano, Alto, Tenor and Bass, each at its ticks, replacing their notes; a
@@ -762,6 +835,22 @@ interface PianoRollState {
   setBpm: (bpm: number) => void;
   /** Replace the tempo map (sanitized). Its beat-0 tempo becomes `bpm`; with none, the current `bpm` starts it. */
   setTempoMap: (events: readonly TempoEvent[]) => void;
+  /**
+   * KEEP TIME: a new starting tempo (`next.bpm`) and/or a new tempo map
+   * (`next.tempoMap`, as setTempoMap takes it, its beat-0 tempo `next.bpm`
+   * when both are given) with the notes keeping their time in seconds
+   * (lib/tempoConform): each note's start and end, its expression curves, and
+   * its part's controller changes and figured bass move to the ticks that
+   * sound at the seconds they sounded at before, so a transcription stays on
+   * its audio. `opts.parts` picks the parts that keep their seconds: 'all'
+   * (the BPM field's KEEP TIME), or 'audio', the parts timed against audio
+   * (RollTrack `fromAudio`, what MATCH asks for), while every other part keeps
+   * its place in the bar. The markers, the chord figures and the bends keep
+   * their seconds when every part holding notes does. A looping lane's notes
+   * are its pattern and keep their ticks. The grid grows to hold the notes.
+   * One undo step, and none when nothing changes. Returns how many notes moved.
+   */
+  setTempoKeepingTime: (next: { bpm?: number; tempoMap?: readonly TempoEvent[] }, opts?: { parts?: 'all' | 'audio' }) => number;
   /** Add a tempo change, or a fermata when `event.fermata` is set, replacing one of its kind at its beat (on the roll's ticks). */
   addTempoEvent: (event: TempoEvent) => void;
   /**
@@ -897,7 +986,11 @@ interface PianoRollState {
    *  meter, lanes and bends, so the write changes the part's notes (and
    *  `opts.part`) and the grid's fit only, whatever it is handed; a note on a
    *  lane the roll does not have (or has with other time than the notes' own
-   *  `meter.lanes`) goes to lane A, and the document's markers stay too. With
+   *  `meter.lanes`) goes to lane A, and the document's markers stay too. A
+   *  part timed against audio (`opts.part.fromAudio`) placed at another map
+   *  than the roll's (its `tempoMap`, else one tempo at `bpm`) keeps its
+   *  seconds under the roll's map (lib/tempoConform), notes and controller
+   *  changes, so a song's next stem stays on the song after MATCH. With
    *  `opts.document` the tempo map, meter, bends and markers it hands in
    *  replace the roll's as in a roll of one part, and bends it leaves out
    *  stay. Returns whether the document was kept (ImportNotesResult). */
@@ -1277,6 +1370,18 @@ export const importedRollBpm = (bpm: number): number => clampTempoBpm(bpm);
 
 /** One tempo at `bpm`: the map a roll gets when its notes arrive at a single tempo. */
 const oneTempo = (bpm: number): TempoEvent[] => sanitizeRollTempoMap([], bpm);
+
+/**
+ * The map an import's notes were placed at: its file's `tempoMap` (starting
+ * at `bpm`, else at the roll's `rollBpm`, as importNotes writes it), else one
+ * tempo at a finite `bpm`; null when it hands in neither, and its notes are
+ * on the roll's own clock.
+ */
+const importedTempoMap = (bpm: number | undefined, tempoMap: readonly TempoEvent[] | undefined, rollBpm: number): TempoEvent[] | null => {
+  const finiteBpm = typeof bpm === 'number' && Number.isFinite(bpm) && bpm > 0;
+  if (tempoMap) return sanitizeRollTempoMap(tempoMap, finiteBpm ? importedRollBpm(bpm) : rollBpm);
+  return finiteBpm ? oneTempo(importedRollBpm(bpm)) : null;
+};
 
 /** The map and the `bpm` it starts at, written together so the two can never disagree. */
 const tempoSlice = (tempoMap: TempoEvent[]): Pick<PianoRollState, 'bpm' | 'tempoMap'> =>
@@ -1832,8 +1937,10 @@ const percussionChannelOf = (t: RollTrack, percussion: boolean | undefined): num
  * The parts after an import into the part being edited that carries `part`
  * (RollPartImport): its controller changes replace the part's own, and a part
  * that follows the roll's voice takes the file's registry instrument (when the
- * file sets no program, or that instrument's), else the file's program. An
- * empty patch when nothing changes.
+ * file sets no program, or that instrument's), else the file's program. A
+ * stem's instrument, else its program (`stemInstrument`), goes to the part
+ * whatever it played, and a part named for the instrument it had is renamed
+ * for a new instrument. An empty patch when nothing changes.
  */
 const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<PianoRollState> => {
   const i = s.tracks.findIndex((t) => t.id === s.activeTrackId);
@@ -1844,7 +1951,20 @@ const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<Pia
     const next = cleanPartControls(part.controls);
     if (!sameControls(t.controls, next)) t = withControls(t, next);
   }
-  if (before.program === null) {
+  const stem = part.stemInstrument === true ? orchestraInstrument(part.instrumentId) : undefined;
+  // The instrument the last stem gave the part named it ("Voice"): the name follows the new voice. A name the user gave stays.
+  const was = orchestraInstrument(before.instrumentId);
+  const namedForWas = !!was && before.name === uniquePartName(s.tracks, was.name, before.id);
+  if (stem) {
+    const namedForIt = namedForWas && was?.id !== stem.id;
+    t = { ...t, ...instrumentPatchOf(s.tracks, t, stem), ...(namedForIt ? { name: uniquePartName(s.tracks, stem.name, t.id) } : {}) };
+  } else if (part.stemInstrument === true && part.program != null) {
+    // A stem's program the registry has no instrument for (Acoustic Guitar (steel), 25): the part plays that program.
+    const program = cleanPartProgram(part.program);
+    const gmName = program !== null ? GM_NAMES[program] : undefined;
+    t = withoutInstrument({ ...t, program, channel: percussionChannelOf(t, part.percussion) });
+    if (namedForWas && gmName) t = { ...t, name: uniquePartName(s.tracks, gmName, t.id) };
+  } else if (before.program === null) {
     const inst = orchestraInstrument(part.instrumentId);
     if (inst && (part.program == null || inst.program === part.program)) {
       t = { ...t, ...instrumentPatchOf(s.tracks, t, inst) };
@@ -1852,10 +1972,20 @@ const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<Pia
       t = withoutInstrument({ ...t, program: cleanPartProgram(part.program), channel: percussionChannelOf(t, part.percussion) });
     }
   }
+  // The part's notes are the import's now: timed against audio when it says so, else not.
+  if (part.fromAudio === true && t.fromAudio !== true) t = { ...t, fromAudio: true };
+  else if (part.fromAudio !== true) t = withoutAudioMark(t);
   if (t === before) return {};
   const tracks = s.tracks.slice();
   tracks[i] = t;
   return { tracks };
+};
+
+/** A part without its audio mark (RollTrack `fromAudio`). */
+const withoutAudioMark = (t: RollTrack): RollTrack => {
+  if (t.fromAudio === undefined) return t;
+  const { fromAudio: _drop, ...rest } = t;
+  return rest;
 };
 
 /**
@@ -1865,6 +1995,34 @@ const importedPartSlice = (s: PianoRollState, part: RollPartImport): Partial<Pia
  * edit in another part leaves the view where it is. A step written before
  * parts existed puts its notes into the active part.
  */
+/**
+ * `stepTracks` with each part's VST3 instrument holding the state its plugin
+ * has now: an undo or a redo puts a part's notes and settings back, but the
+ * running plugin keeps the sound the user dialled into it, so the state
+ * recorded with an older step is never put back over it. An instrument the
+ * step holds under another entry id (a different plugin, or one since
+ * removed) keeps the step's own.
+ */
+const withLiveVstStates = (stepTracks: RollTrack[], current: readonly RollTrack[]): RollTrack[] => {
+  const live = new Map<string, VstNode>();
+  for (const t of current) if (t.vstInstrument?.vst) live.set(t.vstInstrument.id, t.vstInstrument.vst);
+  if (live.size === 0) return stepTracks;
+  let changed = false;
+  const out = stepTracks.map((t) => {
+    const now = t.vstInstrument ? live.get(t.vstInstrument.id) : undefined;
+    const was = t.vstInstrument?.vst;
+    if (!now || !was || (now.raw_state === was.raw_state && now.state_host === was.state_host)) return t;
+    changed = true;
+    const vst: VstNode = { ...was };
+    if (now.raw_state) vst.raw_state = now.raw_state;
+    else delete vst.raw_state;
+    if (now.state_host) vst.state_host = now.state_host;
+    else delete vst.state_host;
+    return { ...t, vstInstrument: { ...(t.vstInstrument as ChainEntry), vst } };
+  });
+  return changed ? out : stepTracks;
+};
+
 const restoredParts = (s: PianoRollState, step: RollHistorySnapshot): Partial<PianoRollState> => {
   if (!step.tracks?.length) return { notes: step.notes };
   const carriesLink = 'editingClipId' in step;
@@ -1874,7 +2032,7 @@ const restoredParts = (s: PianoRollState, step: RollHistorySnapshot): Partial<Pi
   const partLinks = activeTrackId === s.activeTrackId ? s.partLinks : withPartLink(s.partLinks, s.activeTrackId, s.editingClipId);
   const active = step.tracks.find((t) => t.id === activeTrackId) as RollTrack;
   return {
-    tracks: step.tracks,
+    tracks: withLiveVstStates(step.tracks, s.tracks),
     ...(step.rollDocId ? { rollDocId: step.rollDocId } : {}),
     activeTrackId,
     notes: active.notes,
@@ -2422,6 +2580,51 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       // An equal map writes nothing, so writing it again adds no undo step.
       return next.length === s.tempoMap.length && next.every((e, i) => sameEvent(e, s.tempoMap[i])) ? {} : tempoSlice(next);
     }),
+  setTempoKeepingTime: (next, opts) => {
+    let moved = 0;
+    set((s) => {
+      const bpm = isNum(next.bpm) && next.bpm > 0 ? clampTempoBpm(next.bpm) : null;
+      let map = s.tempoMap;
+      if (next.tempoMap) map = sanitizeRollTempoMap(next.tempoMap, bpm ?? s.bpm);
+      else if (bpm !== null) map = sanitizeRollTempoMap(s.tempoMap.map((e) => (isEventOf(e, 0, 'tempo') ? { ...e, bpm } : e)), bpm);
+      const tempoUnchanged = map.length === s.tempoMap.length && map.every((e, i) => sameEvent(e, s.tempoMap[i]));
+      if (tempoUnchanged) return {};
+      const c = { from: s.tempoMap, to: map };
+      const all = (opts?.parts ?? 'all') === 'all';
+      const keeps = (t: RollTrack): boolean => all || t.fromAudio === true;
+      const active = activeTrackOf(s);
+      const part = (t: RollTrack): RollTrack => {
+        if (!keeps(t)) return t;
+        const own = t.id === s.activeTrackId ? t : { ...t, notes: conformNotes(t.notes, c, s.lanes) };
+        if (t.id !== s.activeTrackId) moved += t.notes.length;
+        const controls = conformControls(own.controls, c);
+        const figuredBass = conformFiguredBass(own.figuredBass, c);
+        return { ...own, ...(controls ? { controls } : {}), ...(figuredBass ? { figuredBass } : {}) };
+      };
+      const tracks = s.tracks.map(part);
+      const notes = keeps(active) ? conformNotes(s.notes, c, s.lanes) : s.notes;
+      if (keeps(active)) moved += s.notes.length;
+      // The document's own marks keep their seconds only when every part with notes does.
+      const whole = all || rollTracksOf(s).every((t) => t.notes.length === 0 || keeps(t));
+      const everyNote = allPartNotes(tracks.map((t) => (t.id === s.activeTrackId ? { ...t, notes } : t)));
+      const end = everyNote.reduce((m, n) => Math.max(m, n.step + n.length), 0);
+      return {
+        ...tempoSlice(map),
+        notes,
+        tracks,
+        ...(whole
+          ? {
+              markers: sanitizeRollMarkers(conformTicked(s.markers, c)),
+              harmonyChords: conformTicked(s.harmonyChords, c),
+              bends: sanitizeBends(conformBends(s.bends, c, s.lanes)),
+            }
+          : {}),
+        totalSteps: Math.min(MAX_STEPS, roundUpToBar(s.meterMap, Math.max(s.totalSteps, end), s.pickupSteps)),
+        ...selectionOf(notes, s.selectedIds, s.selectedNoteId),
+      };
+    });
+    return moved;
+  },
   addTempoEvent: (event) =>
     set((s) => {
       if (!event || !isNum(event.beat)) return {};
@@ -2637,8 +2840,9 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
     set((s) => {
       // The part's controller changes and figures go with its notes: they shaped and figured notes that are gone.
       const active = s.tracks.find((t) => t.id === s.activeTrackId);
-      const tracks = active?.controls || active?.figuredBass
-        ? s.tracks.map((t) => (t === active ? withFiguredBass(withControls(t, undefined), undefined) : t))
+      // So does its audio mark: whatever is written next is not the transcription that was cleared.
+      const tracks = active?.controls || active?.figuredBass || active?.fromAudio
+        ? s.tracks.map((t) => (t === active ? withoutAudioMark(withFiguredBass(withControls(t, undefined), undefined)) : t))
         : s.tracks;
       return {
         notes: [],
@@ -2742,10 +2946,17 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         // The other parts play by the document's tempo map, meter, lanes and
         // bends, so a write into this part changes its notes and the fit only,
         // and the file part's controllers and instrument, which are its own.
-        const notes = migrateNotes(notesOnLanes(incoming, s.lanes, meter?.lanes));
+        // A transcription placed at its file's map keeps its seconds under the roll's.
+        const placedBy = opts?.part?.fromAudio === true ? importedTempoMap(bpm, incomingTempo, s.bpm) : null;
+        const conform = placedBy ? { from: placedBy, to: s.tempoMap } : null;
+        const retime = !!conform && !sameTiming(conform);
+        const timed = retime ? conformNotes(incoming, conform, meter?.lanes) : incoming;
+        const part = retime && opts?.part?.controls ? { ...opts.part, controls: conformControls(opts.part.controls, conform) } : opts?.part;
+        const notes = migrateNotes(notesOnLanes(timed, s.lanes, meter?.lanes));
         return {
           notes,
-          ...(opts?.part ? importedPartSlice(s, opts.part) : {}),
+          // Every import sets the part's audio mark, so a generator's notes are never taken for a transcription.
+          ...importedPartSlice(s, part ?? {}),
           // The grid still holds every other part's notes.
           ...(notes.length ? fitToNotes([...notes, ...otherPartNotes(s)], s.meterMap, s.pickupSteps) : {}),
           ...noSelection(),
@@ -2771,7 +2982,7 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       // The file's part: its controller changes, and its instrument for a part
       // that has none of its own, over the parts `others` left. In this write,
       // so one step.
-      const partSlice = opts?.part ? importedPartSlice({ ...s, ...others }, opts.part) : {};
+      const partSlice = importedPartSlice({ ...s, ...others }, opts?.part ?? {});
       if (notes.length === 0) {
         return { notes, ...others, ...partSlice, ...m, bends, ...tempo, ...markers, ...noSelection(), currentStep: 0, isPlaying: false, recordedRange: null };
       }
@@ -2807,6 +3018,8 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         : s.highestNote;
       return {
         notes,
+        // A take recorded to the roll's own click keeps its place in the bar: the part is no transcription of a song now.
+        ...importedPartSlice(s, {}),
         totalSteps: Math.min(MAX_STEPS, roundUpToBar(s.meterMap, Math.max(DEFAULT_STEPS, s.totalSteps), s.pickupSteps)),
         lowestNote: lo,
         highestNote: hi,
@@ -3001,6 +3214,10 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
       return sameRollKey(next, s.rollKey) ? {} : { rollKey: next };
     }),
   clearVoiceLeading: () => set((s) => (s.voiceLeading === null && s.harmonyChords.length === 0 ? {} : { voiceLeading: null, harmonyChords: [] })),
+  showSongChords: (chords) => {
+    set({ harmonyChords: chords.map((c) => ({ ...c })), showHarmony: true });
+    saveComposeViewOf(get());
+  },
   runVoiceLeadingCheck: async (opts = {}) => {
     const s = get();
     const pick = checkPick(rollTracksOf(s), opts.partIds);
@@ -3090,6 +3307,63 @@ export const usePianoRollStore = create<PianoRollState>()((set, get) => ({
         return rest;
       });
       return changed ? { tracks } : {};
+    }),
+  setTrackVstInstrument: (id, plugin) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      if (!t) return {};
+      let next: RollTrack;
+      if (!plugin?.plugin_path) {
+        if (!t.vstInstrument) return {};
+        const { vstInstrument: _drop, ...rest } = t;
+        next = rest;
+      } else if (t.vstInstrument?.vst?.plugin_path === plugin.plugin_path) {
+        // The plugin the part already holds: on again, with its state and its session.
+        if (t.vstInstrument.enabled) return {};
+        next = { ...t, vstInstrument: { ...t.vstInstrument, enabled: true } };
+      } else {
+        const entry: ChainEntry = {
+          id: partVstUid(),
+          effect: 'vst3',
+          params: {},
+          enabled: true,
+          vst: { plugin_path: plugin.plugin_path, plugin_name: plugin.plugin_name || plugin.plugin_path },
+        };
+        next = { ...t, vstInstrument: entry };
+      }
+      return { tracks: s.tracks.map((x) => (x.id === id ? next : x)) };
+    }),
+  setTrackVstEnabled: (id, enabled) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      if (!t?.vstInstrument || t.vstInstrument.enabled === enabled) return {};
+      const vstInstrument = { ...t.vstInstrument, enabled };
+      return { tracks: s.tracks.map((x) => (x.id === id ? { ...x, vstInstrument } : x)) };
+    }),
+  setPartVstState: (entryId, rawState, stateHost) => {
+    const s = get();
+    if (!rawState || !s.tracks.some((t) => t.vstInstrument?.id === entryId)) return;
+    // The plugin's state is no edit of the document: no undo step records it.
+    historyApplying = true;
+    try {
+      set((st) => ({
+        tracks: st.tracks.map((t) =>
+          t.vstInstrument?.id === entryId && t.vstInstrument.vst
+            ? { ...t, vstInstrument: { ...t.vstInstrument, vst: { ...t.vstInstrument.vst, raw_state: rawState, state_host: stateHost } } }
+            : t,
+        ),
+      }));
+    } finally {
+      historyApplying = false;
+    }
+  },
+  setTrackArticulationSwitch: (id, mode) =>
+    set((s) => {
+      const t = s.tracks.find((x) => x.id === id);
+      if (!t || (t.articulationSwitch ?? 'keyswitch') === mode) return {};
+      const { articulationSwitch: _drop, ...rest } = t;
+      const next: RollTrack = mode === 'keyswitch' ? rest : { ...rest, articulationSwitch: mode };
+      return { tracks: s.tracks.map((x) => (x.id === id ? next : x)) };
     }),
   writePlanToRoll: (plan) => commitComposerWrite(planPartWrites(plan), 'plan', true, {}, undefined, true),
   writeCounterpoint: (result) => commitComposerWrite(counterpointPartWrites(result), 'counterpoint', false, {}, undefined, true),

@@ -794,6 +794,13 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
         base_lines = split_text(str(text))
         lyric_text = "\n".join(ln.text for ln in base_lines if ln.kind == "lyric")
         aligner = str(req.get("aligner") or "").strip().lower() or aligner_choice()
+        # The language the words on the page are in: the one asked for, else
+        # the one the document already says.
+        text_language = (
+            language
+            if language != "auto"
+            else (existing.language if existing else "en")
+        )
         with tempfile.TemporaryDirectory() as td:
             path, audio_source = await _resolve_vocal_audio(
                 entry_id, Path(td), bool(req.get("isolate", True)), job
@@ -821,6 +828,7 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
                         duration_ms=duration_ms,
                         scale=scale,
                         progress=lambda m: job.update(message=m),
+                        language=text_language,
                     )
                 log.info(
                     "lyrics: forced-aligned %s from %s in %.1fs (%d/%d words)",
@@ -830,11 +838,7 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
                     stats.matched,
                     stats.total,
                 )
-                doc_language = (
-                    language
-                    if language != "auto"
-                    else (existing.language if existing else "en")
-                )
+                doc_language = text_language
             else:
                 cfg = transcription.resolve_config()
                 job.update(
@@ -854,11 +858,14 @@ async def run_align(job: Job, entry_id: str, req: dict[str, Any]) -> None:
                     float(res.get("elapsed") or 0.0),
                 )
                 job.update(progress=0.85, message="aligning")
+                doc_language = _language_detected(res, language)
                 lines, stats = align_words(
-                    base_lines, _asr_words(res, scale), duration_ms
+                    base_lines,
+                    _asr_words(res, scale),
+                    duration_ms,
+                    language=doc_language,
                 )
                 stats.aligner = "whisper"
-                doc_language = _language_detected(res, language)
         stats.audio_source = audio_source
         doc = LyricsDoc(
             entry_id=entry_id,
@@ -929,7 +936,10 @@ async def run_review(job: Job, entry_id: str, req: dict[str, Any]) -> None:
             raise RuntimeError(str(res.get("error") or "transcription failed"))
         job.update(progress=0.85, message="review: comparing the words")
         heard_lines, rstats = align_words(
-            doc.lines, _asr_words(res, scale), duration_ms
+            doc.lines,
+            _asr_words(res, scale),
+            duration_ms,
+            language=doc.language,
         )
         fresh = load_doc(entry_id) or doc  # the user may have edited meanwhile
         # Whisper is wrong far more often than the lyric sheet on sung vocals,

@@ -40,8 +40,14 @@ import {
   cleanPartControls,
   cleanPartName,
   cleanPartProgram,
+  cleanPartSwitchMode,
+  cleanPartVstInstrument,
   partController,
 } from './rollTracks';
+import type { ChainEntry } from '../state/effectChainStore';
+
+/** A part instrument entry copied whole: its plugin, state and parameters, never shared with the part. */
+const copyVstEntry = (e: ChainEntry): ChainEntry => ({ ...e, params: { ...e.params }, ...(e.vst ? { vst: { ...e.vst } } : {}) });
 import { quantizeNotes, type QuantizeOptions } from './clipNotes';
 import { applyGrooveInMeter, grooveLateness, type GrooveTemplate } from './grooveTemplate';
 import { barAt, laneTimeOf, normalizeMeterMap, roundUpToBar, unrollLanes, type MeterSegment, type PolyLane } from './meterMap';
@@ -458,6 +464,9 @@ export function rollPartRef(part: RollTrack, order: number, doc: string): RollPa
     ...(part.controls?.length ? { controls: part.controls.map((c) => ({ ...c })) } : {}),
     ...(part.figuredBass?.length ? { figuredBass: part.figuredBass.map((m) => ({ ...m })) } : {}),
     ...(part.cantusFirmus ? { cantusFirmus: true } : {}),
+    ...(part.fromAudio ? { fromAudio: true } : {}),
+    ...(part.vstInstrument?.vst ? { vstInstrument: copyVstEntry(part.vstInstrument) } : {}),
+    ...(part.articulationSwitch ? { articulationSwitch: part.articulationSwitch } : {}),
   };
 }
 
@@ -474,6 +483,8 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
   const controls = cleanPartControls(r.controls);
   const figuredBass = cleanFiguredBass(r.figuredBass);
   const bankLsb = cleanPartBankLsb(r.bankLsb);
+  const vstInstrument = cleanPartVstInstrument(r.vstInstrument);
+  const articulationSwitch = cleanPartSwitchMode(r.articulationSwitch);
   return {
     doc: r.doc,
     id: r.id,
@@ -490,6 +501,9 @@ export function cleanRollPartRef(raw: unknown, fallback: { name: string; color: 
     ...(controls ? { controls } : {}),
     ...(figuredBass ? { figuredBass } : {}),
     ...(r.cantusFirmus === true ? { cantusFirmus: true } : {}),
+    ...(r.fromAudio === true ? { fromAudio: true } : {}),
+    ...(vstInstrument ? { vstInstrument } : {}),
+    ...(articulationSwitch ? { articulationSwitch } : {}),
   };
 }
 
@@ -515,6 +529,9 @@ function partOfClip(clip: RollPartClip, track: Pick<EditorTrack, 'name' | 'color
       ...(ref.controls?.length ? { controls: ref.controls.map((c) => ({ ...c })) } : {}),
       ...(ref.figuredBass?.length ? { figuredBass: ref.figuredBass.map((m) => ({ ...m })) } : {}),
       ...(ref.cantusFirmus ? { cantusFirmus: true } : {}),
+      ...(ref.fromAudio ? { fromAudio: true } : {}),
+      ...(ref.vstInstrument?.vst ? { vstInstrument: copyVstEntry(ref.vstInstrument) } : {}),
+      ...(ref.articulationSwitch ? { articulationSwitch: ref.articulationSwitch } : {}),
     };
   }
   // A clip bounced before parts: its EDIT track names it, and a drum track makes it a percussion part.

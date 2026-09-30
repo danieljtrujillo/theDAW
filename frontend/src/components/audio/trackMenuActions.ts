@@ -41,6 +41,7 @@ import { useTrackMenuJobs } from '../../state/trackMenuJobStore';
 import { sendTrackToVj } from '../../state/vjSetBus';
 import { startQueue } from '../../state/playlistQueue';
 import { logError, logInfo, logWarn } from '../../state/logStore';
+import { linkSongTime } from '../../lib/songTimeLink';
 import {
   midiIdToSendable,
   sendAudioToChimera,
@@ -293,7 +294,8 @@ async function runStemKey(
   const entry = requireEntry(subject);
   const stem = ctx.stems.find((s) => s.id === stemId);
   if (!stem) throw new Error('that stem is no longer listed');
-  const audio = stemRowToSendable({ id: stem.id, stem_name: stem.name, parent_title: entry.title });
+  // The stem is the time of the song it was separated from.
+  const audio = stemRowToSendable({ id: stem.id, stem_name: stem.name, parent_title: entry.title, entry_id: entry.id });
   switch (action) {
     case 'edit':
       openCenter('edit');
@@ -376,6 +378,14 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
       openCenter('edit');
       await sendAudioToEditor(sendable(subject), row.id === 'edit-new-track' ? 'editor-new-track' : 'editor-first-track');
       return;
+    case 'edit-song-tempo': {
+      // EDIT previews the song's tempo and meter, lined up with its clip, and
+      // applies them on a press (components/audio/SongTempoDialog).
+      const entry = requireEntry(subject);
+      useEditorStore.getState().requestSongTempo({ entryId: entry.id });
+      openCenter('edit');
+      return;
+    }
     case 'edit-stems': {
       const entry = requireEntry(subject);
       const opts = stemOptions(ctx);
@@ -420,6 +430,8 @@ async function run(row: TrackMenuRow, subject: TrackMenuSubject, ctx: TrackMenuA
           // helper the timeline's explode path uses, given a full-length window.
           ...stemClipPlacement({ startSec, durationSec: duration, offsetIntoSource: 0 }, duration, startSec),
           color,
+          // A stem is the time of the entry it was separated from.
+          songTime: linkSongTime(entry.id),
         });
         editor.cachePeaks(clipId, peaks);
       }

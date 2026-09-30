@@ -44,6 +44,10 @@ Open a set from the PERFORM header's Open icon. Three formats land here:
 Clips honour their trim and loop window. A clip saved with a loop range sustains
 when launched instead of one-shotting from sample 0.
 
+A MIDI cell plays its notes on its column's instrument, by the rule EDIT uses for a clip: the cell's own General MIDI program, else its track's program, else the voice of the Instrument picker, each in the bank it was picked in. A drum track's cells play on the drum channel, where the program picks the kit. A set imported from another DAW carries no programs, so its MIDI cells follow the Instrument picker, and a cell that follows the picker renders again on the new voice when the picker changes. A MIDI cell saved from PERFORM reopens in PERFORM with its notes where they were, on the program, bank and drum channel it was saved with.
+
+**Edit in timeline** hands the set to EDIT with each track's program, bank, sound bank and drum channel, and each MIDI clip plays and renders there on the voice it had in the grid.
+
 ---
 
 ## 3. The SwayCommand deck
@@ -73,6 +77,12 @@ panel, then press the physical button.
 > (notes 24–39). In Theory-Engine pad mode the hardware emits a different note set
 > (47, 49, 50, 52, …) — the deck's visualiser understands both, but scene and punch
 > bindings authored at 24–39 will not match. Keep the pads chromatic for these sets.
+
+### The DAW-control mirror
+
+When theDAW detects an Audima Labs Sway, it turns on the Sway's DAW-control mirror, which drives EDIT with the MIDI map the Sway's Ableton Remote Script uses. The Play button (note 0, channel 1) starts and stops EDIT's transport, CC 1–8 and CC 9–16 on channel 1 set the volume and pan of a bank of eight EDIT tracks that follows the track selection, and notes 24–39 on channel 16 sound General MIDI notes from the pads.
+
+The mirror stands down while PERFORM or the SWAY tab is the open view. A pad press there reaches only that view, PERFORM's scene and punch bindings or the SWAY tab's cockpit, and sounds no note. The Play button and the faders leave EDIT alone. A pad the mirror holds when either tab opens, a latched one included, is released. While the mirror stands down, the pads and the Play button do not sound through the keyboard monitor either. On every other tab the mirror works as described above.
 
 ---
 
@@ -153,11 +163,9 @@ in PERFORM depends on the node kind:
 |---|---|---|
 | Built-in rack effect | **Yes** — real Web Audio, live, metered post-FX | Knob/XY/pad routes; full window in EDIT |
 | `ares` (the .gan composite) | **Yes** — its DSP runs live | Its `.gan` panel opens in EDIT/MIX |
-| VST3 / AudioUnit | **No** — inert, exactly as on the EDIT timeline | Native plugin GUI in EDIT/MIX; offline render |
+| VST3 | **Yes**: hosted live in theDAW's live VST host, following the grid's transport and tempo | Native plugin GUI in EDIT/MIX; offline render |
 
-VST3 cannot run in the browser's audio graph, so a plugin node stays listed but
-silent during a live set and is applied when the track is frozen or rendered. Put
-anything you need to *hear* live on a built-in effect.
+A VST3 node on a column runs in theDAW's live VST host, the same host that plays VST3 inserts on the EDIT timeline. The plugin follows the grid as its transport. The first clip that starts while the grid is stopped starts the transport at the grid's beat and tempo, a tempo change while the grid plays reaches the plugin, and Stop, or leaving PERFORM, stops it. A plugin whose host opens after the grid started is told where the grid has got to, so a tempo-synced delay or gate lands on the grid's beat. A plugin that cannot open passes the column's audio through. A plugin from a set imported from another DAW opens at its defaults, since neither host reads another DAW's preset data.
 
 Three built-ins are backed by AudioWorklets — **Chop**, the **Ares** grain stage,
 and the **Kargyraa Sub** octave divider. PERFORM preloads all three when the grid

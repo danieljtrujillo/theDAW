@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, Gauge, Info, ListChecks, Minus, Plus, Repeat, Save, Scissors, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
+import { Check, Gauge, Info, ListChecks, Minus, Plus, Repeat, Save, Scissors, Timer, Trash2, Triangle, Unlink, Waves, X } from 'lucide-react';
 import {
   DEFAULT_GROOVE_ID,
   MAX_ROLL_STEPS,
@@ -39,9 +39,20 @@ import { RollMinimap } from './RollMinimap';
 import { noteIndexOf, type NoteIndex } from '../../lib/noteIndex';
 import { hitNote, lookOf, noteBox, ROLL_LOOKS } from '../../lib/rollCanvas';
 import { clientToLocal, effectiveZoom } from '../../lib/canvasScale';
-import { bpmText, laneSpanLabel } from '../../lib/meterFace';
-import { midiFileNoteCount, partLaneChannels, rollMidiMpeNoRoom, rollToMidiFile } from '../../lib/rollMidi';
-import { stepClock, type RollPlayState } from '../../lib/rollTempo';
+import { bpmText, laneSpanLabel, rollHasAudioParts } from '../../lib/meterFace';
+import { keepTimeOn, setRollBpmByHand, useRollKeepTime } from '../../lib/rollKeepTime';
+import { chordBendLog, midiFileNoteCount, partLaneChannels, rollMidiMpeNoRoom, rollToMidiFile } from '../../lib/rollMidi';
+import { stepClock, tempoAtStep, type RollPlayState, type StepClock } from '../../lib/rollTempo';
+import { splitRollTick, vstPartChannels, type RollVstRoute } from '../../lib/rollVstPlay';
+import {
+  attachRollInstruments,
+  auditionRollVoice,
+  rollVstStamp,
+  sendRollVstMidi,
+  startRollVstClock,
+  stopRollVstClock,
+  tickRollVstClock,
+} from '../../state/rollInstruments';
 import { TEMPO_BPM_MAX, TEMPO_BPM_MIN } from '../../lib/tempoMap';
 import { CLICK_MODES, CLICK_MODE_LABEL, CLICK_MODE_TITLE, asClickMode, type MetronomeScheduler } from '../../lib/metronome';
 import { COUNT_IN_HANDOFF_SEC, rollClickPlan, rollClickSteps, rollPlayOrigin, type RollClick } from '../../lib/rollClick';
@@ -362,13 +373,16 @@ export const PianoRollTransport: React.FC<{
   const meterMap = usePianoRollStore((s) => s.meterMap);
   const pickupSteps = usePianoRollStore((s) => s.pickupSteps);
   const isPlaying = usePianoRollStore((s) => s.isPlaying);
-  const setBpm = usePianoRollStore((s) => s.setBpm);
   const setTotalSteps = usePianoRollStore((s) => s.setTotalSteps);
   const setPlaying = usePianoRollStore((s) => s.setPlaying);
   const play = usePianoRollStore((s) => s.play);
   const setCurrentStep = usePianoRollStore((s) => s.setCurrentStep);
   const masterRef = useMasterGainRef();
   const playTimerRef = useRef<number | null>(null);
+
+  // The parts' VST3 instruments are hosted while the MIDI tab is open, which is
+  // while this key is mounted (state/rollInstruments).
+  useEffect(() => attachRollInstruments(), []);
 
   const stopPlayback = useCallback(() => {
     if (playTimerRef.current != null) {
@@ -477,6 +491,22 @@ export const PianoRollTransport: React.FC<{
     const start = usePianoRollStore.getState();
     const scheduler = createRollScheduler({ ...start, tracks: rollTracksOf(start) }, origin, ROLL_LOOKAHEAD_SEC);
     rollPlayRef.current = { state: scheduler.state(), origin };
+    // The parts' VST3 instruments play on the roll's clock: from the first
+    // downbeat, on the roll second of the step PLAY starts from, at its tempo.
+    let tempoClock: { bpm: number; map: unknown; clock: StepClock } | null = null;
+    const clockOf = (r: { bpm: number; tempoMap: Parameters<typeof stepClock>[1] }): StepClock => {
+      if (!tempoClock || tempoClock.bpm !== r.bpm || tempoClock.map !== r.tempoMap) tempoClock = { bpm: r.bpm, map: r.tempoMap, clock: stepClock(r.bpm, r.tempoMap) };
+      return tempoClock.clock;
+    };
+    const startStep = rollStepAt(scheduler.state().lapState.lap, 0);
+    startRollVstClock(origin, clockOf(start).at(startStep), tempoAtStep(clockOf(start), startStep));
+    // Each tick's VST3 parts: the plugin channel of each of their live channels, and the stamp on the roll's clock.
+    let voices = rollPartVoices();
+    const routeOf = (partId: string): RollVstRoute | undefined => {
+      const vst = voices.get(partId)?.vst;
+      if (!vst) return undefined;
+      return { entryId: vst.entryId, channels: vstPartChannels(scheduler.partChannels(partId) ?? [], vst.channel), stamp: rollVstStamp };
+    };
     // The click plans the same window as the notes, from the same lap clock, so
     // after a seek it never sounds a click the notes have left behind.
     const clicker = click();
@@ -492,11 +522,16 @@ export const PianoRollTransport: React.FC<{
 
     const tick = () => {
       const roll = usePianoRollStore.getState();
-      // Each part plays through its own voice (lib/rollPartVoice): its program,
-      // else its linked clip's, else the roll's own or the picker's.
-      const voices = rollPartVoices();
-      const out = scheduler.tick(ctx.currentTime, { ...roll, tracks: rollTracksOf(roll) }, (id) => voices.get(id));
+      // Each part plays through its own voice (lib/rollPartVoice): its VST3
+      // instrument while that plugin plays, else its program, else its linked
+      // clip's, else the roll's own or the picker's.
+      voices = rollPartVoices();
+      const scheduled = scheduler.tick(ctx.currentTime, { ...roll, tracks: rollTracksOf(roll) }, (id) => voices.get(id));
       rollPlayRef.current = { state: scheduler.state(), origin };
+      // A VST3 part's notes and messages go to its plugin; the rest to the synth.
+      const out = { ...scheduled, ...splitRollTick(scheduled, routeOf, scheduler.channelOwner, ctx.currentTime) };
+      sendRollVstMidi(out.midi);
+      tickRollVstClock(tempoAtStep(clockOf(roll), out.shownStep));
       send(out.wheels);
       for (const n of out.notes) {
         triggerPianoNote(n.note, n.velocity, n.when, n.duration, masterRef.current, {
@@ -518,7 +553,10 @@ export const PianoRollTransport: React.FC<{
         window.clearInterval(playTimerRef.current);
         playTimerRef.current = null;
       }
-      send(scheduler.release(ctx.currentTime));
+      // Every channel back where it starts: the synth's, and each plugin's after it releases its notes.
+      const released = splitRollTick({ notes: [], wheels: scheduler.release(ctx.currentTime) }, routeOf, scheduler.channelOwner, ctx.currentTime);
+      send(released.wheels);
+      stopRollVstClock(ctx.currentTime, released.midi);
       clicker.stop();
       rollPlayRef.current = null;
     };
@@ -610,9 +648,17 @@ export const PianoRollTransport: React.FC<{
   // BPM edits the starting tempo (the tempo map's beat-0 point), 20-300 with its fraction.
   const tempoChanges = usePianoRollStore((s) => s.tempoMap.length - 1);
   const [bpmDraft, setBpmDraft] = useState<string | null>(null);
+  // KEEP TIME: a new BPM keeps every note at its second, so a transcription
+  // stays on the audio it came from; off, the notes keep their place in the
+  // bar (lib/rollKeepTime, which holds the choice for the roll document it
+  // was made in, through the tab closing, for this field and a mapped knob).
+  const hasAudioParts = usePianoRollStore((s) => rollHasAudioParts(s));
+  const rollDocId = usePianoRollStore((s) => s.rollDocId);
+  const keepChoice = useRollKeepTime((s) => s.choice);
+  const keepTime = keepTimeOn(keepChoice, rollDocId, hasAudioParts);
   const changeBpm = (text: string) => {
-    const v = Number.parseFloat(text);
-    if (Number.isFinite(v) && v > 0) setBpm(v);
+    const moved = setRollBpmByHand(Number.parseFloat(text));
+    if (moved > 0) logInfo('piano-roll', `BPM ${bpmText(usePianoRollStore.getState().bpm)} with KEEP TIME: ${moved} note${moved === 1 ? '' : 's'} kept ${moved === 1 ? 'its' : 'their'} time in seconds`);
   };
   const commitBpmDraft = () => {
     if (bpmDraft === null) return;
@@ -701,6 +747,19 @@ export const PianoRollTransport: React.FC<{
           className={`${FIELD_VALUE} w-13 bg-transparent border-none outline-none`}
         />
       </div>
+      <StripKey
+        on={keepTime}
+        aria-pressed={keepTime}
+        onClick={() => useRollKeepTime.getState().choose(rollDocId, !keepTime)}
+        aria-label="Keep time: a new BPM keeps every note at its time in seconds"
+        legend="Keep time"
+        icon={<Timer className={STRIP_GLYPH} />}
+        description={
+          keepTime
+            ? 'On: a new BPM keeps every note at its second, so a transcription stays on its audio. Press to keep each note in its bar instead.'
+            : 'Off: a new BPM keeps every note in its bar, so the notes play faster or slower. Press to keep them at their seconds.'
+        }
+      />
       <div className={FIELD}>
         <label htmlFor="piano-roll-total-steps" className={FIELD_LEGEND}>Steps</label>
         <input
@@ -1123,8 +1182,9 @@ export const PianoRollMapKey: React.FC = () => (
     storageKey="sa3-midi-map:piano-v1"
     params={PIANO_MIDI_PARAMS}
     onChange={(key, value) => {
-      const { setBpm, setTotalSteps, meterMap, pickupSteps } = usePianoRollStore.getState();
-      if (key === 'bpm') setBpm(value);
+      const { setTotalSteps, meterMap, pickupSteps } = usePianoRollStore.getState();
+      // Through KEEP TIME, as the BPM field sets it (lib/rollKeepTime).
+      if (key === 'bpm') setRollBpmByHand(value);
       else if (key === 'totalSteps') {
         // Up to the next bar line of the roll's meter.
         setTotalSteps(Math.max(16, roundUpToBar(meterMap, Math.round(value), pickupSteps)));
@@ -1366,7 +1426,8 @@ export const importMidiFileToRoll = (file: File): void => {
       // the part being edited. A channel whose pitch wheel moves gets its own
       // lane and curve (lib/rollMidi, lib/rollPartsImport). The grid fits the
       // length (to a bar line of that map) and the pitch range of every part.
-      const done = importMidiParts(data, 'imp');
+      // A stem saved from the library ("bass.mid") plays its stem's instrument, not basic-pitch's Electric Piano.
+      const done = importMidiParts(data, 'imp', { stem: file.name });
       const changes = done.tempoChanges;
       const where = done.into === 'parts' ? ` as ${done.parts} parts` : ` into ${activeTrackOf(usePianoRollStore.getState()).name}`;
       logInfo(
@@ -1376,6 +1437,10 @@ export const importMidiFileToRoll = (file: File): void => {
       if (done.folded) logWarn('piano-roll', `The roll holds ${MAX_ROLL_PARTS} parts: the notes of the last ${done.folded + 1} tracks are in its last part`);
       if (done.pastEnd) logWarn('piano-roll', pastEndLog(done.pastEnd));
       if (done.keptDocument) logInfo('piano-roll', KEPT_DOCUMENT_LOG);
+      // A channel's wheel under chords: each lone note's bend became its own, the chords' left out.
+      const chordBends = chordBendLog(file.name, done);
+      for (const line of chordBends.info) logInfo('piano-roll', line);
+      for (const line of chordBends.warn) logWarn('piano-roll', line);
     } catch (e) {
       logError('piano-roll', `MIDI import failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1725,7 +1790,7 @@ const KeyboardKeys = React.memo(function KeyboardKeys({
         return (
           <div
             key={midi}
-            onClick={() => triggerPianoNote(midi, 100, getEngineCtx().currentTime + 0.02, 0.25, masterRef.current, currentRollVoice())}
+            onClick={() => auditionRollVoice(midi, 100, getEngineCtx().currentTime + 0.02, 0.25, masterRef.current, currentRollVoice())}
             // Fixed key colours: the theme remaps bg-zinc-900 and text-zinc-700 (light
             // black keys on paper, pale C labels on dark), while a keyboard needs
             // dark black keys and dark ink on the white ones in every theme.
@@ -2461,7 +2526,7 @@ export const PianoRoll: React.FC<{
       ticks: placed.ticks,
       velocity: 96,
     });
-    triggerPianoNote(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current, currentRollVoice());
+    auditionRollVoice(targetNote, 96, getEngineCtx().currentTime + 0.02, 0.2, masterRef.current, currentRollVoice());
   };
 
   // A press on a note selects it. The click that ends the press deletes the

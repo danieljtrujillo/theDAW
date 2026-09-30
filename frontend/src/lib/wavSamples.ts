@@ -67,6 +67,48 @@ export function readWavSamples(buffer: ArrayBuffer): WavSamples {
   throw new Error('the WAV file has no data chunk');
 }
 
+/** A WAV file's rate, channel count and length, read from its header. */
+export interface WavShape {
+  sampleRate: number;
+  channels: number;
+  frames: number;
+}
+
+/**
+ * The shape of a WAV file from its first bytes (`head`, which must reach past
+ * the `data` chunk's header) and the size of the whole file (`fileBytes`), so a
+ * caller that only needs the length does not read the samples. The data
+ * chunk's declared size is capped at what the file holds. Throws, saying why,
+ * for anything that is not a WAV file.
+ */
+export function readWavShape(head: ArrayBuffer, fileBytes: number = head.byteLength): WavShape {
+  const view = new DataView(head);
+  if (head.byteLength < 12 || tag(view, 0) !== 'RIFF' || tag(view, 8) !== 'WAVE') {
+    throw new Error('not a RIFF/WAVE file');
+  }
+  let channels = 0;
+  let sampleRate = 0;
+  let bits = 0;
+  let off = 12;
+  while (off + 8 <= head.byteLength) {
+    const id = tag(view, off);
+    const size = view.getUint32(off + 4, true);
+    const body = off + 8;
+    if (id === 'fmt ') {
+      if (body + 16 > head.byteLength) break;
+      channels = view.getUint16(body + 2, true);
+      sampleRate = view.getUint32(body + 4, true);
+      bits = view.getUint16(body + 14, true);
+    } else if (id === 'data') {
+      if (!channels || !sampleRate || !bits) throw new Error('the WAV data chunk comes before its format');
+      const dataBytes = Math.max(0, Math.min(size, fileBytes - body));
+      return { sampleRate, channels, frames: Math.floor(dataBytes / ((bits / 8) * channels)) };
+    }
+    off = body + size + (size & 1);
+  }
+  throw new Error('the WAV header ends before its data chunk');
+}
+
 function sampleReader(view: DataView, format: number, bits: number): (p: number) => number {
   if (format === FORMAT_FLOAT && bits === 32) return (p) => view.getFloat32(p, true);
   if (format === FORMAT_PCM && bits === 16) return (p) => view.getInt16(p, true) / 0x8000;

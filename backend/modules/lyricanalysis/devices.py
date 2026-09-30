@@ -28,20 +28,22 @@ import hashlib
 from dataclasses import dataclass, field
 
 from ..lyrics.schema import LyricsDoc
-from . import meaning
+from . import latin, meaning
 from .phonetics import (
     ARPABET_VOWELS,
     Pron,
     Syllable,
     classify_rhyme,
     consonant_family,
+    is_latin_scope,
+    language_scope,
     max_rhyme_score,
     normalize_word,
     pronounce,
     pronounce_phrase,
     rhyme_key,
     rhyme_nuclei,
-    stress_pattern,
+    scope_marks_length,
     syllabify,
     tail_key,
     vowel_colour_distance,
@@ -215,23 +217,47 @@ _ONSET_DIGRAPHS = frozenset(
 _SIBILANTS = frozenset({"S", "Z", "SH", "ZH", "CH", "JH"})
 _PLOSIVES = frozenset({"P", "B", "T", "D", "K", "G"})
 
+
+class _Lexicon:
+    """A word list in each language the analysis reads.
+
+    Membership is asked in the language of the analysis running now (see
+    ``phonetics.language_scope``), so every detector that tests a word against
+    one of these lists reads a Latin lyric against the Latin list without
+    being told which language it is in.
+    """
+
+    def __init__(self, en: frozenset[str], la: frozenset[str]) -> None:
+        self.en = en
+        self.la = la
+
+    def __contains__(self, word: object) -> bool:
+        return word in (self.la if is_latin_scope() else self.en)
+
+
 # Function words are excluded from the *internal* phonetic passes only. Line
 # endings are never filtered — "you"/"do" at the ends of two lines is a rhyme,
 # but the same pair mid-line fires on almost every rap bar and means nothing.
-_NOISE_WORDS = frozenset(
-    """a an the of to and in it is on at as or if be am are was were do does did
-    my me you your his her its our their that this these those with for from by
-    we he she they us him them not no so up out but who what when then than
-    there here""".split()
+_NOISE_WORDS = _Lexicon(
+    en=frozenset(
+        """a an the of to and in it is on at as or if be am are was were do does
+        did my me you your his her its our their that this these those with for
+        from by we he she they us him them not no so up out but who what when
+        then than there here""".split()
+    ),
+    la=latin.FUNCTION_WORDS,
 )
 
 # Words that carry a sentence on past a line break, so a line ending without
 # punctuation before one of these is enjambed rather than end-stopped.
-_CONTINUATIONS = frozenset(
-    """and but or nor yet so for to of in on at by with from into onto through
-    that which who whom whose when while where as like than till until unless
-    because though although if before after upon over under across around
-    against about""".split()
+_CONTINUATIONS = _Lexicon(
+    en=frozenset(
+        """and but or nor yet so for to of in on at by with from into onto
+        through that which who whom whose when while where as like than till
+        until unless because though although if before after upon over under
+        across around against about""".split()
+    ),
+    la=latin.CONTINUATIONS,
 )
 
 # Terminal punctuation. A comma counts: it is a syntactic break, and treating
@@ -270,24 +296,30 @@ _METER_LENGTHS = {
 # Onomatopoeia is a lexicon, not a computation. Split in two: words that are
 # only ever imitative, and words with a common non-imitative sense ("pop",
 # "crack") that get a lower confidence so the UI's floor slider can drop them.
-_ONOMATOPOEIA = frozenset(
-    """achoo baa bam bang beep blip bloop boing bonk boom brrr bzz cackle caw
-    cheep chime chirp chomp chug clang clank clatter click clink clip-clop
-    clunk cock-a-doodle-doo conk crackle creak croak crunch cuckoo ding
-    ding-dong dong fizz flutter gargle giggle glug gong grunt gurgle hiccup
-    hiss honk hoo howl hum jangle jingle kaboom kapow kerplunk meow moo mumble
-    murmur neigh oink patter peep phew ping pitter plink plop plunk pow psst
-    puff purr quack rattle ribbit rumble rustle screech shh shush sizzle slosh
-    slurp splash splat splutter sputter squawk squeak squeal squelch squish
-    swish swoosh thud thump thwack tick ticktock tinkle toot tweet twang
-    ululate vroom wham whimper whir whirr whish whoosh whomp woof yelp yowl
-    zap zing zoom""".split()
+_ONOMATOPOEIA = _Lexicon(
+    en=frozenset(
+        """achoo baa bam bang beep blip bloop boing bonk boom brrr bzz cackle
+        caw cheep chime chirp chomp chug clang clank clatter click clink
+        clip-clop clunk cock-a-doodle-doo conk crackle creak croak crunch cuckoo
+        ding ding-dong dong fizz flutter gargle giggle glug gong grunt gurgle
+        hiccup hiss honk hoo howl hum jangle jingle kaboom kapow kerplunk meow
+        moo mumble murmur neigh oink patter peep phew ping pitter plink plop
+        plunk pow psst puff purr quack rattle ribbit rumble rustle screech shh
+        shush sizzle slosh slurp splash splat splutter sputter squawk squeak
+        squeal squelch squish swish swoosh thud thump thwack tick ticktock
+        tinkle toot tweet twang ululate vroom wham whimper whir whirr whish
+        whoosh whomp woof yelp yowl zap zing zoom""".split()
+    ),
+    la=latin.ONOMATOPOEIA,
 )
-_ONOMATOPOEIA_WEAK = frozenset(
-    """bark bash boo buzz chatter clap clash cough crack crash cry drip gasp
-    groan growl gulp knock moan pant pop rap rip roar scream shriek sigh slam
-    slap smack snap sniff snore stutter tap thunder wail whack whine whisper
-    whistle zip""".split()
+_ONOMATOPOEIA_WEAK = _Lexicon(
+    en=frozenset(
+        """bark bash boo buzz chatter clap clash cough crack crash cry drip gasp
+        groan growl gulp knock moan pant pop rap rip roar scream shriek sigh
+        slam slap smack snap sniff snore stutter tap thunder wail whack whine
+        whisper whistle zip""".split()
+    ),
+    la=latin.ONOMATOPOEIA_WEAK,
 )
 
 # Suffixes the conservative stemmer will strip, longest first.
@@ -502,6 +534,13 @@ def _token(line: int, index: int, raw: str, pron: Pron | None = None) -> _Tok:
     # "runnin'" is what tells the phonetics it is the -ing word.
     p = pronounce(raw) if pron is None else pron
     syls = tuple(syllabify(p))
+    bounds: tuple[tuple[int, int], ...] = ()
+    if is_latin_scope():
+        # Latin syllables are read off the letters, so their bounds are exact
+        # rather than estimated from vowel groups ("Gal|li|a", not "Ga|llia").
+        bounds = latin.syllable_bounds(raw, scope_marks_length())
+    if len(bounds) != len(syls):
+        bounds = syllable_char_bounds(raw, len(syls))
     return _Tok(
         line=line,
         index=index,
@@ -509,7 +548,7 @@ def _token(line: int, index: int, raw: str, pron: Pron | None = None) -> _Tok:
         norm=norm,
         pron=p,
         syls=syls,
-        bounds=syllable_char_bounds(raw, len(syls)),
+        bounds=bounds,
         rkey=rhyme_key(p),
         nuclei=rhyme_nuclei(p),
     )
@@ -2455,12 +2494,51 @@ def _emit_homophone_echoes(occurrences: dict[str, list[_Tok]], out: _Out) -> Non
         )
 
 
+def _emit_quantity_puns(lines: list[_Line], out: _Out) -> None:
+    """Latin's own double meaning: one spelling, two vowel lengths, two words.
+
+    "malum" is evil and "mālum" an apple; "populus" a people and "pōpulus" a
+    poplar. Only a text that marks its lengths can show it, and only when both
+    readings are in the lyric: the marks are the whole of the difference.
+    """
+    if not scope_marks_length():
+        return
+    forms: dict[str, dict[str, list[_Tok]]] = {}
+    for line in lines:
+        if not line.is_lyric or not line.anchored:
+            continue
+        for tok in line.toks:
+            if tok.norm and len(tok.norm) > 1 and tok.phones:
+                spelled = latin.marked_spelling(tok.raw)
+                forms.setdefault(tok.norm, {}).setdefault(spelled, []).append(tok)
+    for word, by_form in sorted(forms.items()):
+        if len(by_form) < 2:
+            continue
+        toks = sorted(
+            (t for group in by_form.values() for t in group),
+            key=lambda t: (t.line, t.index),
+        )
+        out.add(
+            "pun",
+            [_span(t) for t in toks],
+            label=_label("quantity pun", sorted(by_form)),
+            detail="one spelling, two vowel lengths: two different words",
+            phones=list(toks[0].phones),
+            confidence=meaning.HOMOPHONE_PLAY_CONF,
+            group=f"quantity-{word}",
+        )
+
+
 def _emit_double_meanings(lines: list[_Line], out: _Out) -> None:
     """The meaning findings that are facts about the language, not readings.
 
     The interpretive ones — metaphor, irony, imagery — still need the optional
-    LLM pass. These four do not, so they run on every analysis.
+    LLM pass. These four do not, so they run on every analysis. Their tables
+    are English; a Latin lyric gets its own fact instead, the quantity pun.
     """
+    if is_latin_scope():
+        _emit_quantity_puns(lines, out)
+        return
     occurrences = _meaning_occurrences(lines)
     if not occurrences:
         return
@@ -2775,6 +2853,8 @@ def _stems(word: str) -> set[str]:
     which one is right. A pair counts as polyptoton when their candidate sets
     intersect.
     """
+    if is_latin_scope():
+        return {s for s in latin.stems(word) if len(s) >= 3}
     if len(word) < 3:
         return set()
     out = {word}
@@ -2916,7 +2996,15 @@ def _emit_enjambment(lyric: list[_Line], out: _Out) -> None:
         if not _ends_open(a.text) or not a.seq_idx or not b.seq or not b.seq_idx:
             continue
         first_raw = b.toks[b.seq_idx[0]].raw
-        starts_sentence = first_raw[:1].isupper() and b.seq[0] not in _CONTINUATIONS
+        # A Latin line opening on "-que" or "-ve" ("Lāvīniaque vēnit") is the
+        # same sentence going on, whatever its capital says.
+        joined = is_latin_scope() and latin.split_enclitic(b.seq[0])[1] in (
+            "que",
+            "ve",
+        )
+        starts_sentence = (
+            first_raw[:1].isupper() and b.seq[0] not in _CONTINUATIONS and not joined
+        )
         if starts_sentence:
             continue
         out.add(
@@ -2970,10 +3058,28 @@ def name_meter(stress: str) -> tuple[str, int] | None:
 
 
 def _emit_meter(lyric: list[_Line], metrics: dict[int, LineMetrics], out: _Out) -> None:
+    quantitative = is_latin_scope() and scope_marks_length()
     for line in lyric:
         m = metrics.get(line.index)
         if m is None:
             continue
+        if quantitative:
+            # Classical verse is built from long and short syllables, which a
+            # text with its macrons shows; its stresses fall where the words
+            # put them. A line that scans is reported by its quantity; one
+            # that does not may still be accentual (medieval) verse.
+            scanned = latin.scan_line([t.raw for t in line.toks])
+            if scanned is not None:
+                name, scansion = scanned
+                out.add(
+                    "meter",
+                    [_span(t) for t in line.toks],
+                    label=_label("meter", [name]),
+                    detail=f"{name}: {scansion}",
+                    confidence=0.9,
+                    group=f"meter-{name.replace(' ', '-')}",
+                )
+                continue
         named = name_meter(m.stress)
         if named is None:
             continue
@@ -2996,7 +3102,10 @@ def _line_metrics(lines: list[_Line]) -> list[LineMetrics]:
     out: list[LineMetrics] = []
     for line in lines:
         tok = _line_ending(line) if line.is_lyric else None
-        stress = stress_pattern([t.norm for t in line.toks]) if line.toks else ""
+        # Off the tokens' own syllables: the same pronunciations the syllable
+        # count and every device used. Re-reading the normalised spelling lost
+        # what normalisation strips, and a Latin macron is what places a stress.
+        stress = "".join(str(s.stress) for t in line.toks for s in t.syls)
         out.append(
             LineMetrics(
                 line=line.index,
@@ -3080,7 +3189,18 @@ def _stats(
 def analyse(
     doc: LyricsDoc,
 ) -> tuple[list[Device], list[LineMetrics], list[SectionSummary], AnalysisStats]:
-    """Every rules-based finding in one pass over a lyrics document."""
+    """Every rules-based finding in one pass over a lyrics document, read in
+    the document's own language."""
+    text = doc.text or "\n".join(ln.text or "" for ln in doc.lines or [])
+    with language_scope(
+        getattr(doc, "language", "en"), macronized=latin.has_length_marks(text)
+    ):
+        return _analyse(doc)
+
+
+def _analyse(
+    doc: LyricsDoc,
+) -> tuple[list[Device], list[LineMetrics], list[SectionSummary], AnalysisStats]:
     lines, sects = _prepare(doc)
     metrics = _line_metrics(lines)
     by_line = {m.line: m for m in metrics}

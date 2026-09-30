@@ -11,10 +11,17 @@
  * note ring after its clip ends; past the window that render holds nothing
  * else.
  *
+ * A MIDI cell renders with its own column's voice, decided as EDIT decides a
+ * clip's (lib/clipProgram `clipVoice`): the clip's program, else its track's,
+ * else the global instrument picker's; the bank each program was picked in; and
+ * a drum track's notes on the drum channel, where the program is the kit.
+ *
  * Pure, so node tests load it.
  */
-import type { DawClip } from './dawImportClient';
+import type { DawClip, DawTrack } from './dawImportClient';
 import type { RenderNote, RenderOptions } from './midiSynth';
+import { clipVoice, type ClipVoice, type GlobalVoice } from './clipProgram';
+import { DRUM_CHANNEL } from './editChannels';
 
 type CellClip = Pick<DawClip, 'start_time' | 'end_time' | 'offset_into_source' | 'file_path' | 'loop_on'>;
 
@@ -24,6 +31,51 @@ export const cellWindowEndSec = (clip: CellClip): number =>
 
 /** How a MIDI cell's notes render. */
 export const sessionMidiRenderOptions = (clip: CellClip): RenderOptions => ({ minDurationSec: cellWindowEndSec(clip) });
+
+type VoiceClip = Pick<DawClip, 'instrument_program' | 'instrument_bank' | 'instrument_bank_id'>;
+type VoiceTrack = Pick<DawTrack, 'instrument_program' | 'instrument_bank' | 'instrument_bank_id' | 'is_percussion'>;
+
+const given = <T>(v: T | null | undefined): T | undefined => (v === null ? undefined : v);
+
+/** The voice a MIDI cell sounds with: its clip's program, else its column's, else the picker's. */
+export function sessionCellVoice(clip: VoiceClip, track: VoiceTrack | null | undefined, global: GlobalVoice): ClipVoice {
+  return clipVoice(
+    {
+      instrumentProgram: given(clip.instrument_program),
+      instrumentBank: given(clip.instrument_bank),
+      instrumentBankId: given(clip.instrument_bank_id),
+    },
+    track
+      ? {
+          instrumentProgram: given(track.instrument_program),
+          isPercussion: track.is_percussion === true,
+          instrumentBank: given(track.instrument_bank),
+          instrumentBankId: given(track.instrument_bank_id),
+        }
+      : null,
+    global,
+  );
+}
+
+/** A MIDI cell's render: its notes (on the drum channel for a drum column), the
+ *  options naming its voice, and the voice itself. */
+export function sessionMidiRender(
+  clip: CellClip & VoiceClip,
+  track: VoiceTrack | null | undefined,
+  notes: readonly RenderNote[],
+  global: GlobalVoice,
+): { notes: RenderNote[]; options: RenderOptions; voice: ClipVoice } {
+  const voice = sessionCellVoice(clip, track, global);
+  return {
+    notes: voice.percussion ? notes.map((n) => ({ ...n, channel: DRUM_CHANNEL })) : [...notes],
+    options: {
+      ...sessionMidiRenderOptions(clip),
+      ...(voice.program !== undefined ? { program: voice.program } : {}),
+      ...(voice.bank ? { bank: voice.bank } : {}),
+    },
+    voice,
+  };
+}
 
 export interface CellSpan {
   /** Seconds into the audio the cell starts at. */

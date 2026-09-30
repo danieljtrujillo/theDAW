@@ -336,10 +336,21 @@ def test_the_worker_job_carries_raw_params(tmp_path: Path, monkeypatch):
     seen: dict = {}
 
     def capture(
-        plugin_path, audio, sample_rate, params, raw_state, warnings, raw_params=None
+        plugin_path,
+        audio,
+        sample_rate,
+        params,
+        raw_state,
+        warnings,
+        raw_params=None,
+        automation=None,
     ):
         seen.update(
-            path=plugin_path, params=params, raw_params=raw_params, raw_state=raw_state
+            path=plugin_path,
+            params=params,
+            raw_params=raw_params,
+            raw_state=raw_state,
+            automation=automation,
         )
         return audio * np.float32(2.0)
 
@@ -370,5 +381,6 @@ def test_the_worker_job_carries_raw_params(tmp_path: Path, monkeypatch):
         "params": None,
         "raw_params": {"gain": 0.2},
         "raw_state": "AAEC",
+        "automation": None,
     }
     assert float(np.load(job / plugin_worker.OUTPUT_AUDIO_FILE).max()) == 2.0

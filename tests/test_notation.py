@@ -538,6 +538,41 @@ def test_export_route_beatsaber_lands_in_its_own_folder_and_serves_zip(
     assert chart["audio"]["durationSec"] == 30.0
 
 
+def test_export_route_lays_out_a_nonsense_analysis_tempo_at_the_beat_list_tempo(
+    notation_client: TestClient, tmp_path: Path, monkeypatch
+):
+    """Entries in a real library carry aubio's 40.69 BPM closing estimate
+    over a beat list that keeps 151.65 BPM. The MIDI runner stamps the beat
+    list's tempo on the entry's MIDI; an export from that MIDI is laid out at
+    the same tempo, not at 40.69."""
+    from backend.modules.library import router as library_router_module
+    from tests.test_library_store import _seed_generate_entry
+
+    monkeypatch.setattr(beatsaber, "find_ffmpeg", lambda: None)
+    _seed_generate_entry(tmp_path, "job_bt", 0)
+    entry_id = "job_bt_00"
+    store = library_router_module.get_store()
+    entry_dir = tmp_path / "job_bt" / "00"
+    midi = entry_dir / "midi" / "scale.mid"
+    _write_scale_midi(midi)
+    store.db.add_notation_artifact(
+        artifact_id="scale_mid", entry_id=entry_id, kind="midi", path=str(midi)
+    )
+    gap = 60.0 / 151.65
+    store.db.upsert_analysis(
+        entry_id, {"bpm": 40.692665, "beats": [0.2 + gap * i for i in range(36)]}
+    )
+
+    r = notation_client.post(
+        f"/api/notation/{entry_id}/export",
+        json={"source_artifact_id": "scale_mid", "format": "beatsaber"},
+    )
+    assert r.status_code == 200, r.text
+    meta = json.loads(r.json()["artifact"]["metadata_json"])
+    assert meta["bpm_source"] == "analysis"
+    assert meta["bpm"] == pytest.approx(151.65, abs=0.01)
+
+
 def test_midi_to_musicxml_end_to_end(tmp_path: Path):
     db = LibraryDB(tmp_path / "library.db")
     db.upsert_entry({"id": "track"})

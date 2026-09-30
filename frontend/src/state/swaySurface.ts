@@ -14,6 +14,14 @@
  * controller drives Ableton. This is distinct from the expressive-dimension
  * `swayBus`, which reads the same device's CCs as learnable 0..1 signals; the two
  * are different ways to use the one controller, chosen by the DAW-control toggle.
+ *
+ * The mirror stands down while PERFORM or the SWAY tab is the open view: PERFORM
+ * launches scenes and clips from the same controller and the SWAY tab hands it to
+ * the cockpit, so a pad there must not also sound a General MIDI note, nor the
+ * Play button and faders reach an EDIT timeline nobody is looking at. A pad the
+ * mirror holds when either tab opens is released. The Sway's pad and Play notes
+ * stay the controller's while it stands down (`swaySurfaceConsumes`), so the
+ * keyboard monitor does not sound them either.
  */
 import { subscribeToMidi, type MidiBusMessage } from './midiBus';
 import { useEditorStore, type EditorTrack } from './editorStore';
@@ -30,6 +38,7 @@ import {
 } from '../lib/soundfontEngine';
 import { PAD_LO, swayPadVoice } from '../lib/swayPadVoice';
 import { isSwaySurfaceEnabled, getSwayPadMode, isSwaySustain } from './swaySurfaceStore';
+import { useAppUiStore, type CenterTab } from './appUiStore';
 
 // --- The decoded "The Sway" MIDI map (channels are 0-indexed here) ---------- //
 const PLAY_NOTE = 0;
@@ -45,6 +54,32 @@ const BANK_SIZE = 8;
 // pad sustains until release). null = a fallback piano one-shot with nothing to
 // release. Keyed by pad index; survives a pad-mode change mid-hold.
 const padVoices = new Map<number, { channel: number; note: number } | null>();
+
+/** The tabs that own the Sway while they are open: PERFORM ('session') and SWAY. */
+const STAND_DOWN_TABS: ReadonlySet<CenterTab> = new Set<CenterTab>(['session', 'sway']);
+
+/** True while PERFORM or the SWAY tab is the open view. */
+const standsDown = (): boolean => STAND_DOWN_TABS.has(useAppUiStore.getState().centerTab);
+
+/** What the pads sound through. */
+export interface SwaySurfaceDeps {
+  liveSynthReady: () => boolean;
+  warmSoundfont: () => void;
+  /** The built-in piano, for a pad pressed before the soundfont synth is live. */
+  oneShot: (note: number, velocity: number) => void;
+  noteOn: (channel: number, program: number, note: number, velocity: number) => void;
+  noteOff: (channel: number, note: number) => void;
+}
+
+const SOUNDFONT_PADS: SwaySurfaceDeps = {
+  liveSynthReady: isLiveSynthReady,
+  warmSoundfont: () => { void ensureSoundfontReady(); },
+  oneShot: (note, velocity) => triggerPianoNoteFromMidi(note, velocity),
+  noteOn: liveNoteOn,
+  noteOff: liveNoteOff,
+};
+
+let pads: SwaySurfaceDeps = SOUNDFONT_PADS;
 
 const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 const clampPan = (v: number): number => Math.max(-1, Math.min(1, v));
@@ -97,9 +132,9 @@ function padOn(padIdx: number, velocity: number): void {
   const vel = Math.max(1, Math.min(127, velocity));
   // Until the soundfont synth is live, fall back to the built-in piano one-shot
   // (no sustain) and warm the soundfont so the next hit can hold.
-  if (!isLiveSynthReady()) {
-    void ensureSoundfontReady();
-    triggerPianoNoteFromMidi(PAD_LO + padIdx, vel);
+  if (!pads.liveSynthReady()) {
+    pads.warmSoundfont();
+    pads.oneShot(PAD_LO + padIdx, vel);
     padVoices.set(padIdx, null);
     return;
   }
@@ -108,15 +143,20 @@ function padOn(padIdx: number, velocity: number): void {
   const { channel, program, note } = swayPadVoice(mode, padIdx, sustain, mode === 'track' ? selectedTrack() : null, getGlobalVoice());
   // Note-on now; with sustain off, note-off on release; with sustain on, the note
   // is latched and only released by the next press on this pad.
-  liveNoteOn(channel, program, note, vel);
+  pads.noteOn(channel, program, note, vel);
   padVoices.set(padIdx, { channel, note });
 }
 
 /** Release a pad's held voice immediately, regardless of latch state. */
 function padRelease(padIdx: number): void {
   const v = padVoices.get(padIdx);
-  if (v) liveNoteOff(v.channel, v.note);
+  if (v) pads.noteOff(v.channel, v.note);
   padVoices.delete(padIdx);
+}
+
+/** Release every pad the mirror holds, latched ones included. */
+function releaseAllPads(): void {
+  for (const padIdx of [...padVoices.keys()]) padRelease(padIdx);
 }
 
 function padOff(padIdx: number): void {
@@ -128,6 +168,8 @@ function padOff(padIdx: number): void {
 
 function handle(msg: MidiBusMessage): void {
   if (!isSwaySurfaceEnabled()) return;
+  // PERFORM and the SWAY tab own the controller while they are open.
+  if (standsDown()) return;
   const data = msg.data;
   const status = data[0] ?? 0;
   const cmd = status & 0xf0;
@@ -166,7 +208,9 @@ function handle(msg: MidiBusMessage): void {
 /**
  * Whether the Sway surface (when enabled) consumes this note message, so the
  * caller can suppress the default piano-synth trigger for the Play button and
- * pads. CCs are not piano-triggering, so they are not reported here.
+ * pads. CCs are not piano-triggering, so they are not reported here. True
+ * while the mirror stands down for PERFORM or the SWAY tab too: the pads and
+ * Play belong to that view then, and are no keys for the keyboard monitor.
  */
 export function swaySurfaceConsumes(data: Uint8Array | number[]): boolean {
   if (!isSwaySurfaceEnabled()) return false;
@@ -185,13 +229,23 @@ let _unsub: (() => void) | null = null;
 
 /** Start mirroring the Sway control surface onto theDAW. Idempotent; returns a
  *  stop function. Runs for the MIDI session; the per-message handler no-ops when
- *  DAW-control mode is off, so it is safe to leave subscribed. */
-export function startSwaySurface(): () => void {
+ *  DAW-control mode is off, so it is safe to leave subscribed. `deps` is a seam
+ *  for tests; the app passes none and the pads play the soundfont. */
+export function startSwaySurface(deps: SwaySurfaceDeps = SOUNDFONT_PADS): () => void {
   if (_unsub) return _unsub;
-  if (isSwaySurfaceEnabled()) void ensureSoundfontReady();
+  pads = deps;
+  if (isSwaySurfaceEnabled()) pads.warmSoundfont();
   const off = subscribeToMidi(handle);
+  // A pad held (or latched) when PERFORM or the SWAY tab opens would otherwise
+  // ring until pressed again, and that press no longer reaches the mirror.
+  const offTabs = useAppUiStore.subscribe((state, prev) => {
+    if (state.centerTab !== prev.centerTab && STAND_DOWN_TABS.has(state.centerTab)) releaseAllPads();
+  });
   _unsub = () => {
     off();
+    offTabs();
+    releaseAllPads();
+    pads = SOUNDFONT_PADS;
     _unsub = null;
   };
   return _unsub;
