@@ -43,12 +43,14 @@ assert.deepEqual(
 );
 
 // describeWheelProfile reads the bindings straight from WHEEL_PROFILES.
+// The default profile shows the EDIT conventions: wheel scrolls, Shift scrolls
+// sideways, Ctrl zooms time, Alt zooms track height.
 assert.deepEqual(describeWheelProfile('thedaw'), [
-  { gesture: 'Wheel', action: WHEEL_ACTION_TEXT['zoom-time'] },
-  { gesture: 'Ctrl + wheel', action: WHEEL_ACTION_TEXT['zoom-time-fine'] },
+  { gesture: 'Wheel', action: WHEEL_ACTION_TEXT['pan-lanes'] },
+  { gesture: 'Ctrl + wheel', action: WHEEL_ACTION_TEXT['zoom-time'] },
   { gesture: 'Shift + wheel', action: WHEEL_ACTION_TEXT['pan-time'] },
-  { gesture: 'Alt + wheel', action: WHEEL_ACTION_TEXT['pan-lanes'] },
-  { gesture: 'Ctrl + Shift + wheel', action: WHEEL_ACTION_TEXT['resize-lanes'] },
+  { gesture: 'Alt + wheel', action: WHEEL_ACTION_TEXT['resize-lanes'] },
+  { gesture: 'Ctrl + Shift + wheel', action: WHEEL_ACTION_TEXT['zoom-time-fine'] },
   { gesture: 'Ctrl + Alt + wheel', action: WHEEL_ACTION_TEXT['pan-lanes'] },
 ]);
 assert.deepEqual(describeWheelProfile('reaper'), [

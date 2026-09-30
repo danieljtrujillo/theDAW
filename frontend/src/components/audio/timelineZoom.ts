@@ -13,6 +13,7 @@
  *    divided by the cumulative CSS `layoutZoom` to reach local px;
  *  - `zoom` is px per second (local px).
  */
+import type { EditWheelInput } from '../../lib/editWheel';
 import {
   clipChromeTier,
   visibleClipHeader,
@@ -222,13 +223,15 @@ export type WheelDispatch =
   | { kind: 'lane-height'; height: number };
 
 /**
- * Resolve a wheel event under `profile` (lib/timeline/viewport wheelIntent) into
- * an editor action. Lane resize moves the height by a quarter of the wheel
- * delta (wheel up grows), clamped to [lanes.min, lanes.max]; a no-op movement
- * (zero delta, height already at the limit) is `none`.
+ * Resolve a wheel event under `profile` (lib/timeline/viewport wheelIntent,
+ * which reads the gesture through lib/editWheel: Cmd counts as Ctrl on macOS
+ * only, per `e.platform` or the host's) into an editor action. Lane resize
+ * moves the height by a quarter of the wheel delta (wheel up grows), clamped
+ * to [lanes.min, lanes.max]; a no-op movement (zero delta, height already at
+ * the limit) is `none`.
  */
 export function wheelDispatch(
-  e: { deltaX: number; deltaY: number; deltaMode: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean },
+  e: EditWheelInput,
   profile: WheelProfile,
   pageHeightPx: number,
   speeds: { coarseSpeed?: number; fineSpeed?: number },
