@@ -2742,7 +2742,7 @@ def test_only_write_musicxml_calls_the_music21_musicxml_writer() -> None:
         ): "Path.write_text (ABC export, plain text -- not MusicXML)",
         (
             "engine.py",
-            2525,
+            2527,
             "output_path",
             "write_text",
         ): "Path.write_text (alphaTex export, plain text -- not MusicXML)",
