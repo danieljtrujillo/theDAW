@@ -284,9 +284,22 @@ from one of two places:
 - **letter-to-sound rules** — a real fallback, not a stub, for everything the
   dictionary does not have. Lyrics are full of slang, names, coinages and
   ad-libs, so this path runs constantly even with the dictionary installed.
+- **the Latin reading rules** — for a document whose language is Latin (the
+  SING picker, saved on the document). Latin spelling is its pronunciation, so
+  no dictionary is needed: the reader syllabifies by the Latin rules, places
+  the stress by the penultimate law (a heavy penult takes it, a light one
+  passes it to the syllable before), reads the diphthongs `ae oe au eu ei`
+  (and `ui` in `cui`, `huic`, `hui` and `cuicumque`), `qu`/`gu`, and
+  consonantal `i`/`j` and `u`/`v`, and lets the enclitics `-que -ne -ve` pull
+  the stress onto the syllable in front of them. A macron (`ā ē ī ō ū ȳ`) is a
+  long vowel and decides where the stress falls; it never changes the vowel's
+  colour, so a text with macrons and the same text without them rhyme and
+  assonate alike. The church books' acute (`Dóminus`) places the stress
+  directly. Capitals, punctuation, hyphens and inscriptional `V` for `u`
+  (`POPVLVSQVE`) are read as what they are.
 
 The tooltip on **ANALYSE** / **RE-ANALYSE** says which one actually backed this
-analysis: `cmudict`, `rules`, or `mixed`.
+analysis: `cmudict`, `rules`, `mixed`, or `latin`.
 
 **Be aware of what this costs when it says `rules`.** The guessed
 pronunciations are the weaker half, and they go wrong in both directions: the
@@ -304,6 +317,20 @@ discounts the confidence of anything it feeds, by 15% when one side of a pair
 was guessed and 25% when both were — but only when a dictionary is actually
 installed, because when everything is a guess, discounting everything equally
 just slides the whole lyric under your confidence floor and tells you nothing.
+
+In a Latin document the GUESSED tile counts something else: words whose
+stress rests on a vowel length the text does not mark. A text with macrons has
+none; a plain text has a few, where an open penult could be long or short
+(`divisa` without its marks). Nothing is discounted for them, because the
+sounds are the spelling's own and only the stress was guessed. Paste the
+macrons and the count goes to zero.
+
+A Latin document with its macrons also gets its classical meter: a line that
+scans as a dactylic hexameter, an elegiac pentameter or a hendecasyllable is
+reported by its quantities (`DDSSDS  — ∪ ∪ | ...`) under **meter**; medieval
+rhymed Latin without macrons is reported by its stresses like any other lyric.
+Latin's own double meaning, the quantity pun (`malum` evil, `mālum` apple),
+is found when both spellings are in the text.
 
 If the tooltip says `rules` and you expected `cmudict`, the dictionary is not
 importable in the backend's environment: run `uv sync` and restart the backend.
