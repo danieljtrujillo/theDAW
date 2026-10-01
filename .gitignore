@@ -38,6 +38,8 @@ data/sway-projects/
 # sound fonts it installed, with their registry (backend/modules/soundfonts/store.py)
 data/soundbanks/
 data/soundfonts/
+# The live VST host's per-session folders and logs (backend/modules/vst/live_host.py)
+data/vst_live/
 data/local_checkpoints.json
 data/library.db
 data/library.db-*
