@@ -13,7 +13,7 @@
  *   instance (same entry ids the CC routes drive), so tweaks are audible live.
  */
 import React, { useMemo, useState } from 'react';
-import { ChevronsRight, Search, X } from 'lucide-react';
+import { AppWindow, ChevronsRight, Search, X } from 'lucide-react';
 import type { DawProject, DawTrack } from '../../lib/dawImportClient';
 import { performSlots, performTracks, type PerformSlot } from '../../lib/performModel';
 import { getRackEffect, rackEffectDefaults } from '../../lib/rackEffects';
@@ -25,12 +25,17 @@ import { TendrilParam } from '../nodefi/NodefiControls';
 import { PerformSlotAdd } from './PerformSlotAdd';
 import { VstLiveRowBadge } from '../audio/VstLiveRowBadge';
 import { VstParamPanel } from '../audio/VstParamPanel';
+import { useVstEditorStore } from '../../state/vstEditorStore';
+import { keepPerformVstState } from '../../state/performVstState';
 
 const PERFORM_ACCENT = '#34d399';
 
 /** The rail's edits are single pushes into the running chain; there is no
  *  undo step to bracket, so a plugin panel's gesture marks do nothing here. */
 const NO_GESTURE = (): void => {};
+/** What a plugin's own window hands back when it runs as a separate copy (no
+ *  live host): kept on the slot's device, like a live host's capture. */
+const KEEP_WINDOW_STATE = (entryId: string, rawState: string): void => keepPerformVstState(entryId, rawState, 'pedalboard');
 
 function RoutesTab({ tracks }: { tracks: DawTrack[] }): React.ReactElement {
   const ccMods = usePerformRoutingStore((s) => s.ccMods);
@@ -269,14 +274,26 @@ function ParamsTab({ tracks }: { tracks: DawTrack[] }): React.ReactElement {
               />
             ))
           ) : selected.slot.kind === 'vst' ? (
-            // The plugin's own parameter list, as its running host reports it.
-            <VstParamPanel
-              entry={selected.slot.entry}
-              idPrefix={`perform-vst-${selKey}`}
-              onWrite={(params) => pushPerformDeviceParams(selected.trackIndex, selected.slot.deviceIndex, params)}
-              onGestureStart={NO_GESTURE}
-              onGestureEnd={NO_GESTURE}
-            />
+            <>
+              {/* The plugin's own window (PerformVstWindow holds it). */}
+              <button
+                type="button"
+                onClick={() => useVstEditorStore.getState().open(selected.slot.entry, KEEP_WINDOW_STATE)}
+                aria-label={`Open the ${selected.slot.name} window`}
+                title="Open the plugin's own window"
+                className="inline-flex items-center gap-1.5 rounded border border-teal-500/40 bg-teal-500/15 px-2 py-1 font-sans text-xs font-bold text-teal-200 hover:bg-teal-500/25"
+              >
+                <AppWindow className="h-3.5 w-3.5" /> Window
+              </button>
+              {/* The plugin's own parameter list, as its running host reports it. */}
+              <VstParamPanel
+                entry={selected.slot.entry}
+                idPrefix={`perform-vst-${selKey}`}
+                onWrite={(params) => pushPerformDeviceParams(selected.trackIndex, selected.slot.deviceIndex, params)}
+                onGestureStart={NO_GESTURE}
+                onGestureEnd={NO_GESTURE}
+              />
+            </>
           ) : (
             <div className="font-sans text-xs font-bold text-zinc-500">
               This device is preserved in the set but has no live parameters here.

@@ -17,8 +17,10 @@ import {
   performChainEntries,
   performFxParamOptions,
   performRackDevice,
+  performSlotOfEntry,
   performSlots,
   performVstDevice,
+  storePerformVstState,
 } from './performModel.ts';
 import { dawProjectToTasmo } from './projectClient.ts';
 import { RACK_EFFECTS } from './rackEffects.ts';
@@ -128,5 +130,15 @@ assert.deepEqual(saved[1], { ...own[1], bypass: true }, 'a bypass set in PERFORM
 assert.deepEqual([saved[2].node_type, saved[2].effect_name, saved[2].bypass], ['builtin', 'delay', false]);
 assert.equal(saved[3].node_type, 'vst3');
 assert.equal(saved[3].vst_state?.plugin_path, plugin.path);
+
+/* ── a plugin's captured state is kept on its slot and saved ─────────────── */
+assert.equal(performSlotOfEntry(project, 'perform-0-3')?.kind, 'vst');
+assert.equal(performSlotOfEntry(project, 'perform-0-9'), undefined);
+assert.equal(storePerformVstState(project, 'perform-0-2', 'AAAA', 'thedaw'), false, 'a rack effect holds no plugin state');
+assert.equal(storePerformVstState(project, 'perform-0-3', 'QUJD', 'thedaw'), true);
+assert.equal(performChainEntries(opened, 0)[3].vst?.raw_state, 'QUJD', 'a rebuilt chain starts the plugin on it');
+const resaved = dawProjectToTasmo(project).tracks[0].effect_chain ?? [];
+assert.equal(resaved[3].vst_state?.raw_state, 'QUJD', 'a save writes it');
+assert.equal(resaved[3].vst_state?.state_host, 'thedaw');
 
 console.log('performSlots.test.ts: all assertions passed');

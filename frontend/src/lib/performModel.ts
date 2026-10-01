@@ -174,3 +174,32 @@ export const performScenes = (project: DawProject): string[] => {
   // rows rendered as "01 " with a trailing space.
   return Array.from({ length: count }, (_, index) => project.scenes[index] || `Scene ${index + 1}`);
 };
+
+/* --- A hosted plugin's captured state --------------------------------------
+   A plugin's window (or its live host) hands back an opaque state: the sound
+   dialled in. It is kept on the slot's own device, which is what the chain is
+   rebuilt from and what a save writes. */
+
+/** The slot behind chain entry id `perform-<mixIndex>-<i>`, when the project has it. */
+export function performSlotOfEntry(project: DawProject | null | undefined, entryId: string): PerformSlot | undefined {
+  const m = /^perform-(\d+)-(\d+)$/.exec(entryId);
+  if (!m || !project) return undefined;
+  const mixIndex = Number(m[1]);
+  const track = performTracks(project)[mixIndex];
+  return track ? performSlots(track, mixIndex)[Number(m[2])] : undefined;
+}
+
+/** Keep a captured plugin state on the slot's device. False when the entry is
+ *  no hosted plugin of this project, or there is nothing to keep. */
+export function storePerformVstState(
+  project: DawProject | null | undefined,
+  entryId: string,
+  rawState: string,
+  stateHost: 'thedaw' | 'pedalboard',
+): boolean {
+  const slot = performSlotOfEntry(project, entryId);
+  if (!slot || slot.kind !== 'vst' || !rawState) return false;
+  slot.device.raw_state = rawState;
+  slot.device.state_host = stateHost;
+  return true;
+}

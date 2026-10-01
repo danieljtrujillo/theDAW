@@ -1235,7 +1235,19 @@ function trackInsertsToTasmo(t: DawProject['tracks'][number]): EffectChainNode[]
   // they were, each with its device's bypass, and only the devices past them
   // are mapped.
   if (own && own.length <= devices.length) {
-    const kept = own.map((n, i) => (!!n.bypass === !!devices[i].bypass ? n : { ...n, bypass: !!devices[i].bypass }));
+    const kept = own.map((n, i) => {
+      const d = devices[i];
+      let node = !!n.bypass === !!d.bypass ? n : { ...n, bypass: !!d.bypass };
+      // A plugin whose window was opened in PERFORM holds a newer state than
+      // the file's node (state/performVstState keeps it on the device).
+      if (node.vst_state && d.raw_state && d.raw_state !== node.vst_state.raw_state) {
+        node = {
+          ...node,
+          vst_state: { ...node.vst_state, raw_state: d.raw_state, ...(d.state_host ? { state_host: d.state_host } : {}) },
+        };
+      }
+      return node;
+    });
     if (own.length === devices.length) return kept.every((n, i) => n === own[i]) ? own : kept;
     return [...kept, ...devices.slice(own.length).map(dawDeviceToEffectNode)];
   }
