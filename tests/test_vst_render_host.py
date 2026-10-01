@@ -392,7 +392,7 @@ def test_thedaw_render_timeout_kills_the_child_and_returns_promptly(
     assert communicate_timeouts[1] == vst_router.RENDER_KILL_WAIT_SECONDS
     assert communicate_timeouts[1] < 30
     assert elapsed < prompt_seconds(5.0), (
-        f"the request took {elapsed:.3f}s — a wait wasn't bounded"
+        f"the request took {elapsed:.3f}s: a wait wasn't bounded"
     )
     assert pedalboard_spy == []
 

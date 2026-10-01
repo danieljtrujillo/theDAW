@@ -164,7 +164,9 @@ Concrete rules:
   `windows-x86_64` and `assistant-backend` all completed with conclusion
   `success` on the pull request's CURRENT head sha, read through the API
   (`GET /repos/{owner}/{repo}/commits/{sha}/check-runs`). A check from an
-  older head says nothing.
+  older head says nothing. `windows-x86_64` (build-vst-host.yml) starts only
+  when the pull request touches `native/vst-host/**` or that workflow; on any
+  other pull request the five that start are the whole list.
 - **Never rerun a failed job.** A rerun tests the stale merge with `main` the
   first run made. Merge `main` into the branch and push; that starts a fresh
   run on the current merge.

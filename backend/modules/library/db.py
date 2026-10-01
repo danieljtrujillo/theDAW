@@ -19,7 +19,7 @@ data we accumulate as features land:
 Edge tables are designed so a future export to a real graph DB (kuzudb /
 oxigraph) is a ~30-line script.
 
-Zero external deps — stdlib ``sqlite3`` only. JSON1 is compiled into
+Zero external deps: stdlib ``sqlite3`` only. JSON1 is compiled into
 CPython's bundled SQLite; a Python linked against a system SQLite built
 without it gets the two functions this module uses from ``_ensure_json1``.
 """
