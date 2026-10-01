@@ -21,7 +21,7 @@ import { create } from 'zustand';
 import { useAppUiStore, type CenterTab } from './appUiStore';
 import { useStatusBarStore } from './statusBarStore';
 import { useVstEditorPrefs, type VstEditorMode } from './vstEditorPrefsStore';
-import { vstApi, getNativeWindowHandle, setLiveEditorRectRouter } from '../lib/vstClient';
+import { vstApi, getNativeWindowHandle, setLiveEditorRectRouter, setLiveEditorSizeRouter } from '../lib/vstClient';
 import { setVstLiveStateSink, vstSessions, type VstLiveSession } from '../lib/vstLive/sessionRegistry';
 import { useVstLiveStore } from './vstLiveStore';
 import { beginUndoStep, useEditorStore } from './editorStore';
@@ -589,6 +589,7 @@ function closeLiveEditor(): void {
   if (!rec) return;
   liveEditor = null;
   setLiveEditorRectRouter(null);
+  setLiveEditorSizeRouter(null);
   window.clearInterval(rec.stateTimer);
   if (rec.paramTimer) {
     window.clearTimeout(rec.paramTimer);
@@ -756,6 +757,14 @@ async function openLiveEditor(
       h: Math.round(r.h),
     });
     return true;
+  });
+
+  // The embedded editor's size comes from the session too: the host reports it
+  // when the editor opens and again whenever the plugin resizes its view.
+  setLiveEditorSizeRouter((p) => {
+    if (p !== path) return undefined;
+    if (!embedded) return null;
+    return useVstLiveStore.getState().entries[entry.id]?.editorSize ?? null;
   });
 
   liveEditor = rec;

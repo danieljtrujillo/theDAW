@@ -93,6 +93,9 @@ export interface VstLiveEntryState {
   clamped: boolean;
   /** The plugin's editor window is open on this session. */
   editorOpen: boolean;
+  /** The open editor's size in physical px, as the host last reported it; null
+   *  while the editor is closed or before the host has said. */
+  editorSize: { w: number; h: number } | null;
   /** Whether the plugin holds the entry's saved settings, or started at its
    *  defaults because the host could not restore them. */
   stateOrigin: VstStateOrigin;
@@ -120,6 +123,7 @@ const EMPTY: VstLiveEntryState = {
   hasEditor: false,
   clamped: false,
   editorOpen: false,
+  editorSize: null,
   // Nothing saved, nothing to mismatch: defaults are this entry's state.
   stateOrigin: 'live',
 };
@@ -143,7 +147,9 @@ interface VstLiveState {
   /** The plugin reported a new latency (`restartComponent(kLatencyChanged)`). */
   setLatency: (entryId: string, pluginLatencySamples: number) => void;
   addXruns: (entryId: string, count: number) => void;
-  setEditorOpen: (entryId: string, open: boolean) => void;
+  /** The host's word on the editor window: open or closed, and the size the
+   *  plugin's view has now. A closed editor has no size. */
+  setEditorOpen: (entryId: string, open: boolean, size?: { w: number; h: number }) => void;
   /** Record whether the running plugin holds the entry's saved settings. Set by
    *  the session registry when it spawns (from the state's origin) and cleared
    *  back to `live` by the capture path once a live state lands on the entry. */
@@ -216,7 +222,12 @@ export const useVstLiveStore = create<VstLiveState>()(
         }),
       })),
 
-    setEditorOpen: (entryId, open) => set((s) => ({ entries: patch(s.entries, entryId, { editorOpen: open }) })),
+    setEditorOpen: (entryId, open, size) =>
+      set((s) => {
+        const prev = s.entries[entryId]?.editorSize ?? null;
+        const editorSize = !open ? null : size && size.w > 0 && size.h > 0 ? { w: size.w, h: size.h } : prev;
+        return { entries: patch(s.entries, entryId, { editorOpen: open, editorSize }) };
+      }),
 
     setStateOrigin: (entryId, origin, reason) =>
       set((s) => ({
