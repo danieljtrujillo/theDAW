@@ -177,7 +177,7 @@ def find_musescore4() -> Optional[Path]:
     """The first MuseScore 4 executable of :func:`musescore4_candidates`."""
     seen: set[str] = set()
     for candidate in musescore4_candidates():
-        key = str(candidate).lower()
+        key = os.path.normcase(str(candidate))
         if key in seen:
             continue
         seen.add(key)

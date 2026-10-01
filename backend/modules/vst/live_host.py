@@ -96,6 +96,7 @@ from typing import Any, Optional
 
 from backend.lib import paths
 from backend.lib.launch_token import child_env
+from backend.lib.procs import is_zombie
 from backend.lib.stamps import IncreasingClock
 from backend.modules.vst.path_policy import PluginPathError, check_plugin_path
 
@@ -238,7 +239,9 @@ def pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    # A child that exited and was not reaped yet still answers signal 0 on
+    # Linux and macOS; a zombie runs nothing, so it is gone.
+    return not is_zombie(pid)
 
 
 def _close_quietly(handle: Any) -> None:

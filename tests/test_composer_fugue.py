@@ -24,6 +24,7 @@ from backend.modules.composer.counterpoint import (
     parse_scale,
 )
 from backend.modules.composer.fugue import answer_for, build_fugue, find_strettos
+from tests.timing_bounds import prompt_seconds
 
 Q = 960
 
@@ -170,7 +171,7 @@ def test_a_four_voice_exposition_returns_in_under_ten_seconds() -> None:
     r = build_fugue("c", voices=4, subject_start="dominant", seed=0, episodes=2)
     elapsed = time.perf_counter() - t
     assert len(r["parts"]) == 4
-    assert elapsed < 10.0, f"{elapsed:.1f} s"
+    assert elapsed < prompt_seconds(10.0), f"{elapsed:.1f} s"
 
 
 def test_fugue_refuses_what_it_cannot_write() -> None:

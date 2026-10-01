@@ -60,6 +60,7 @@ from pathlib import Path
 from threading import Lock
 from typing import IO, Iterator, Optional
 from backend.lib import paths
+from backend.lib.fswalk import walk_files
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
@@ -323,7 +324,7 @@ def _newest_source_mtime(root: Path) -> float:
     for name in _SOURCE_DIRS:
         d = root / name
         if d.is_dir():
-            for p in d.rglob("*"):
+            for p in walk_files(d):
                 if p.is_file():
                     newest = max(newest, p.stat().st_mtime)
     return newest

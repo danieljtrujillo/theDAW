@@ -940,7 +940,7 @@ def _install_worker(cfg: LyriaConfig, need_clone: bool, git: str) -> None:
             log.info("lyria.sidecar: git clone %s -> %s", LYRIA_REPO_URL, target)
             creationflags = 0
             if sys.platform == "win32":
-                creationflags = subprocess.CREATE_NO_WINDOW
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             with _sidecar_log_handle() as out:
                 rc = subprocess.call(
                     [git, "clone", "--depth", "1", LYRIA_REPO_URL, str(target)],
@@ -1232,7 +1232,9 @@ def ensure_running(*, wait_for_ready: bool = True) -> str:
                     # of popping a separate cmd window.
                     creationflags = 0
                     if sys.platform == "win32":
-                        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                        creationflags = getattr(
+                            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                        )
                     with _sidecar_log_handle() as spawn_out:
                         new_proc = subprocess.Popen(
                             cmd,

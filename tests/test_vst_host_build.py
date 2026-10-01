@@ -60,7 +60,7 @@ def _have_msvc() -> bool:
     return bool(done.stdout.strip())
 
 
-pytestmark = pytest.mark.skipif(
+pytestmark = pytest.mark.skipif(  # portability: builds the host with MSVC; the Linux build has no CI toolchain
     sys.platform != "win32"
     or shutil.which("cmake") is None
     or shutil.which("powershell") is None

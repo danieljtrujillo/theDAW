@@ -64,6 +64,7 @@ def _foreign_listener(bind: str) -> socket.socket:
         "ipv4",
         pytest.param(
             "dual-stack",
+            # portability: needs a real IPv6 stack; the ipv4 case runs everywhere
             marks=pytest.mark.skipif(
                 not _dual_stack_available(), reason="no IPv6 here"
             ),

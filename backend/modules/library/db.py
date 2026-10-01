@@ -19,8 +19,9 @@ data we accumulate as features land:
 Edge tables are designed so a future export to a real graph DB (kuzudb /
 oxigraph) is a ~30-line script.
 
-Zero external deps — stdlib ``sqlite3`` only. JSON1 is enabled by default
-in CPython's bundled SQLite, so flexible JSON blobs work out of the box.
+Zero external deps — stdlib ``sqlite3`` only. JSON1 is compiled into
+CPython's bundled SQLite; a Python linked against a system SQLite built
+without it gets the two functions this module uses from ``_ensure_json1``.
 """
 
 from __future__ import annotations
@@ -46,6 +47,77 @@ from backend.lib.stamps import IncreasingClock
 from .provider import PROVIDER_SLUG_MAX, detect_provider
 
 log = logging.getLogger(__name__)
+
+# ---- JSON1 -----------------------------------------------------------------
+# json_valid / json_extract are a compile-time SQLite feature. The probe below
+# asks the linked SQLite once per connection; a build without JSON1 gets the
+# same two functions from Python, so every library query answers either way.
+
+_JSON_PATH_STEP = re.compile(r'\.(?:"([^"]+)"|([^.\[\]]+))|\[(\d+)\]')
+
+
+def _py_json_valid(text: Any) -> Optional[int]:
+    if text is None:
+        return None
+    try:
+        json.loads(text)
+    except (TypeError, ValueError):
+        return 0
+    return 1
+
+
+def _py_json_extract(text: Any, path: Any) -> Any:
+    """``json_extract`` for one ``$.key[0].key`` path, with SQLite's result
+    types: text, number, 1/0 for a boolean, JSON text for a container, NULL
+    for JSON null, a missing path or unreadable JSON."""
+    if text is None or not isinstance(path, str) or not path.startswith("$"):
+        return None
+    try:
+        node = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    pos = 1
+    for step in _JSON_PATH_STEP.finditer(path, 1):
+        if step.start() != pos:
+            return None
+        pos = step.end()
+        key = step.group(1) or step.group(2)
+        if key is not None:
+            if not isinstance(node, dict) or key not in node:
+                return None
+            node = node[key]
+        else:
+            index = int(step.group(3))
+            if not isinstance(node, list) or index >= len(node):
+                return None
+            node = node[index]
+    if pos != len(path):
+        return None
+    if isinstance(node, bool):
+        return int(node)
+    if isinstance(node, (dict, list)):
+        return json.dumps(node, separators=(",", ":"))
+    return node
+
+
+def _ensure_json1(conn: sqlite3.Connection) -> bool:
+    """True when the linked SQLite has JSON1. When it does not, register
+    Python ``json_valid`` and ``json_extract`` on ``conn`` (deterministic, so
+    expression indexes accept them) and return False."""
+    try:
+        conn.execute(
+            "SELECT json_valid('{}'), json_extract('{\"a\":1}', '$.a')"
+        ).fetchone()
+        return True
+    except sqlite3.OperationalError as e:
+        conn.create_function("json_valid", 1, _py_json_valid, deterministic=True)
+        conn.create_function("json_extract", 2, _py_json_extract, deterministic=True)
+        log.warning(
+            "library.db: this SQLite build has no JSON1 (%s); json_valid and "
+            "json_extract run in Python",
+            e,
+        )
+        return False
 
 
 SCHEMA_VERSION = 13
@@ -1581,13 +1653,17 @@ def supersede_artifact_file(
                 )
                 counter += 1
             dest = candidate
-        # os.rename, NOT shutil.move: deprecated/ is a sub-directory of the
+        # os.replace, NOT shutil.move: deprecated/ is a sub-directory of the
         # file's own parent, so the move never crosses a filesystem and needs no
         # copy fallback. shutil.move WOULD fall back to copy-then-unlink when the
         # rename is refused (a Windows handle held on the file), leaving a COPY in
         # deprecated/ beside the still-live original -- precisely the duplicate
         # this function exists to prevent. A failed rename simply changes nothing.
-        os.rename(old, dest)
+        # Per platform: Windows refuses the move while another handle is open,
+        # and the old file stays in place. Linux and macOS move the file under
+        # an open handle; the reader keeps its bytes until it closes. Both
+        # outcomes leave the row authoritative and exactly one live copy.
+        os.replace(old, dest)
         log.info("library.db: superseded orphaned artifact copy %s -> %s", old, dest)
         return str(dest)
     except Exception as exc:  # noqa: BLE001 - housekeeping never blocks the write
@@ -2007,6 +2083,9 @@ class LibraryDB:
         self._writelock = FairRLock()
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        #: Whether the linked SQLite has JSON1 (``_ensure_json1`` supplies the
+        #: functions when it does not).
+        self.json1_native = _ensure_json1(self._conn)
         # FIRST, before any statement that can need a lock. sqlite3.connect's
         # `timeout` default is a 5 s busy timeout, and 5 s is not enough here:
         # `_migrate` builds indexes that its own docstring measures in "seconds

@@ -8,6 +8,9 @@
 # 2. When pyproject.toml or uv.lock is staged, scripts/check_lock.py proves the
 #    lock is current and installs on Linux x86_64 and Windows (hard rule 4), so
 #    a platform-incomplete lock never reaches a pull request.
+# 3. scripts/check_portability.py on the staged Python files under backend/,
+#    scripts/ and tests/ (hard rule 5): code that behaves one way on Windows
+#    and another on the Linux runner is named here, before it is committed.
 #
 # Worktrees share the main checkout's venv: the venv lives beside the common
 # git dir, never inside a scratch worktree.
@@ -28,4 +31,11 @@ fi
 
 if git diff --cached --name-only | grep -qE '^(pyproject\.toml|uv\.lock)$'; then
   "$PY" scripts/check_lock.py
+fi
+
+STAGED_PY="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^(backend|scripts|tests)/.*\.py$' || true)"
+if [ -n "$STAGED_PY" ]; then
+  # One path per line; file names in these trees carry no spaces.
+  # shellcheck disable=SC2086
+  "$PY" scripts/check_portability.py $STAGED_PY
 fi

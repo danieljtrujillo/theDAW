@@ -265,19 +265,29 @@ def test_status_says_installing_during_the_first_run_npm_install(first_run):
     assert status["installing"] is False
 
 
+def _pid_running(pid: int) -> bool:
+    """Whether ``pid`` still runs. A process that exited and waits for its
+    parent to reap it is a zombie on Linux and macOS: it has a pid and runs
+    nothing, so it counts as gone."""
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
 def test_stop_during_the_first_run_install_kills_npm_and_does_not_wait(first_run):
     backend = first_run["backend"]
     thread, outcome = _auto_start()
     _wait_for(lambda: (backend / "npm-pid").exists())
     npm_pid = int((backend / "npm-pid").read_text())
-    assert psutil.pid_exists(npm_pid)
+    assert _pid_running(npm_pid)
 
     # Shutdown or Restart while npm install runs (core/teardown.py).
     began = time.monotonic()
     assert assistant_sidecar.stop() is True
     assert time.monotonic() - began < 15, "stop waited on the start"
 
-    _wait_for(lambda: not psutil.pid_exists(npm_pid), timeout=10)
+    _wait_for(lambda: not _pid_running(npm_pid), timeout=10)
     thread.join(20)
     assert not thread.is_alive()
     assert len(outcome) == 1 and isinstance(outcome[0], RuntimeError)

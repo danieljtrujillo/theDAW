@@ -104,16 +104,20 @@ def _candidate_adb_paths() -> list[str]:
     if local:
         out.append(str(Path(local) / "Android" / "Sdk" / "platform-tools" / _EXE))
     home = Path.home()
-    out.append(
-        str(home / "AppData" / "Local" / "Android" / "Sdk" / "platform-tools" / _EXE)
-    )
+    windows = os.name == "nt"
+    if windows:
+        out.append(
+            str(
+                home / "AppData" / "Local" / "Android" / "Sdk" / "platform-tools" / _EXE
+            )
+        )
     out.append(str(home / "Library" / "Android" / "sdk" / "platform-tools" / _EXE))
     out.append(str(home / "Android" / "Sdk" / "platform-tools" / _EXE))
     # Unity Hub's bundled Android SDK (any installed editor version).
-    for base in (
-        r"C:\Program Files\Unity\Hub\Editor",
-        str(home / "Unity" / "Hub" / "Editor"),
-    ):
+    unity_bases = [str(home / "Unity" / "Hub" / "Editor")]
+    if windows:
+        unity_bases.insert(0, r"C:\Program Files\Unity\Hub\Editor")
+    for base in unity_bases:
         out.extend(
             glob.glob(
                 os.path.join(

@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 
 from backend.modules.magenta import sidecar
+from tests.platform_patch import patch_platform
 
 
 class _ProcTable:
@@ -145,7 +146,7 @@ def _as_engine_sees(path: Path) -> str:
 def test_stop_leaves_the_other_checkouts_engine_running(
     platform: str, two_checkouts: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(sidecar.sys, "platform", platform)
+    patch_platform(monkeypatch, sidecar, platform)
     c = two_checkouts
     monkeypatch.setattr(sidecar.subprocess, "Popen", lambda *a, **k: _SpawnedEngine())
 
@@ -189,7 +190,7 @@ def test_stop_leaves_the_other_checkouts_engine_running(
 def test_the_windows_spawn_records_the_engine_pid(
     two_checkouts: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(sidecar.sys, "platform", "win32")
+    patch_platform(monkeypatch, sidecar, "win32")
     seen: list[list[str]] = []
 
     def popen(cmd, *a, **k):
@@ -221,7 +222,7 @@ def test_a_reused_pid_is_not_signalled(
     """The record says 101, but the engine it named exited long ago and the
     system gave 101 to the other checkout's engine. Nothing of ours runs, so
     nothing is signalled and the record is cleared."""
-    monkeypatch.setattr(sidecar.sys, "platform", "win32")
+    patch_platform(monkeypatch, sidecar, "win32")
     c = two_checkouts
     sidecar._PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     sidecar._PID_FILE.write_text("101\n", encoding="utf-8")
@@ -243,7 +244,7 @@ def test_a_listing_that_fails_signals_nothing(
 ) -> None:
     """WSL did not answer: the stop cannot tell whose engine is whose, so it
     signals nobody and keeps the record for the next stop."""
-    monkeypatch.setattr(sidecar.sys, "platform", "win32")
+    patch_platform(monkeypatch, sidecar, "win32")
     sidecar._PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     sidecar._PID_FILE.write_text("101\n", encoding="utf-8")
     calls: list[list[str]] = []
@@ -266,7 +267,7 @@ def test_our_engine_without_a_pid_record_still_stops(
     WSL cannot reach, or an engine started before the record existed). This
     checkout's engine is still ours by its script path, and the other
     checkout's engine is still left alone."""
-    monkeypatch.setattr(sidecar.sys, "platform", "win32")
+    patch_platform(monkeypatch, sidecar, "win32")
     c = two_checkouts
     assert not sidecar._PID_FILE.exists()
     procs = _ProcTable(
@@ -292,7 +293,7 @@ def test_the_spawn_clears_an_old_record_and_reports_a_missing_one(
     """A record left by an earlier engine would read as the new engine's, so
     the spawn removes it; when the new engine's bash never writes one, the
     backend log says so."""
-    monkeypatch.setattr(sidecar.sys, "platform", "win32")
+    patch_platform(monkeypatch, sidecar, "win32")
     sidecar._PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     sidecar._PID_FILE.write_text("999\n", encoding="utf-8")
     monkeypatch.setattr(sidecar.subprocess, "Popen", lambda *a, **k: _SpawnedEngine())
@@ -338,7 +339,7 @@ def test_stable_audio_will_not_load_beside_another_copys_engine(
 
     from backend import server
 
-    monkeypatch.setattr(sidecar.sys, "platform", "win32")
+    patch_platform(monkeypatch, sidecar, "win32")
     c = two_checkouts
     theirs = f"/home/u/mrt2/.venv/bin/python {_as_engine_sees(c['theirs'])}"
     procs = _ProcTable({1: "/init", 202: theirs})
@@ -368,7 +369,7 @@ def test_stable_audio_loads_once_our_own_engine_has_stopped(
 
     from backend import server
 
-    monkeypatch.setattr(sidecar.sys, "platform", "win32")
+    patch_platform(monkeypatch, sidecar, "win32")
     c = two_checkouts
     procs = _ProcTable(
         {101: f"/home/u/mrt2/.venv/bin/python {_as_engine_sees(c['ours'])}"}
@@ -394,7 +395,7 @@ def engine_router(two_checkouts: dict, monkeypatch: pytest.MonkeyPatch):
     async def health():
         return {"reachable": False, "protocol_ok": False, "available": False}
 
-    monkeypatch.setattr(sidecar.sys, "platform", "win32")
+    patch_platform(monkeypatch, sidecar, "win32")
     monkeypatch.setattr(sidecar, "health", health)
     monkeypatch.setattr(sidecar, "setup_state", lambda refresh=False: {"ready": True})
     spawned: list[list[str]] = []

@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from backend.lib import known_paths, paths
+from backend.lib.fswalk import walk_files
 
 log = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ def installed_files(entry: SoundbankEntry) -> list[Path]:
     if not folder.is_dir():
         return []
     return sorted(
-        p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in BANK_EXTS
+        p for p in walk_files(folder) if p.is_file() and p.suffix.lower() in BANK_EXTS
     )
 
 

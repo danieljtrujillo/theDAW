@@ -103,6 +103,76 @@ Concrete rules:
   problem away and never remove a platform from `required-environments`.
 - **Never bypass the hook** (`--no-verify`) to get a lock through.
 
+### 5. Code runs on Linux CI and macOS, not only here
+
+This repo is written on Windows and tested on a two-vCPU Linux runner. Of 123
+pull-request test runs, 18 failed on the first attempt: eight on one
+wall-clock bound, nearly all the rest on code or tests that had only ever run
+on Windows. Write the portable form the first time:
+
+- **Subprocess flags**: `getattr(subprocess, "CREATE_NO_WINDOW", 0)`, never
+  `subprocess.CREATE_NO_WINDOW`. The name does not exist on Linux, and a test
+  that fakes the platform reaches it there.
+- **Folder scans**: `backend.lib.fswalk.walk_files(root)`, or
+  `os.walk(root, followlinks=True)` with a visited `(st_dev, st_ino)` set.
+  `Path.rglob` and a default `os.walk` stop at a directory symlink and enter a
+  Windows junction. A walk that skips links names both: `entry.is_symlink() or
+  entry.is_junction()`.
+- **Text fixtures**: `write_text(..., newline="\n")` or `write_bytes` for any
+  file whose size or bytes a test asserts.
+- **Path case**: `os.path.normcase(...)`, or fold under `if os.name == "nt":`.
+  Never `.lower()` on a path: on Linux two case variants are two folders. A
+  test that compares case variants states the rule for both platforms.
+- **Links in tests**: a link helper makes a junction on Windows and a symlink
+  elsewhere, and skips when the OS refuses (`except OSError: pytest.skip`).
+- **Process liveness**: a zombie counts as gone. `os.kill(pid, 0)`,
+  `psutil.pid_exists`, `is_running` and `wait_procs` report an exited,
+  unreaped process as alive on Linux; use `backend.lib.procs.is_zombie` /
+  `wait_gone`, or check `psutil.STATUS_ZOMBIE`.
+- **Windows paths**: a drive letter, `Program Files` or `AppData` sits under a
+  `sys.platform == "win32"` / `os.name == "nt"` branch, and the other
+  platforms get their own value.
+- **Sockets**: bind both address families, or have the test assert one. A test
+  never depends on whether the runner has IPv6.
+- **SQLite features**: FTS5 and JSON1 are compile-time. Probe, catch
+  `sqlite3.OperationalError` and fall back (`_ensure_json1` and the FTS probe
+  in `backend/modules/library/db.py`).
+- **Renames and locks**: `os.replace`, never `os.rename`. A `PermissionError`
+  retry is for the Windows sharing violation only; off Windows raise at once.
+- **Faking the platform in a test**: `tests.platform_patch.patch_platform(
+  monkeypatch, module, "win32")`. Patching `module.sys.platform` patches the
+  one global `sys` for every module.
+- **Windows-only tests**: a `skipif(sys.platform != "win32")` test has a twin
+  that states what Linux does.
+- **Timing**: every wall-clock bound is `prompt_seconds(<local seconds>)` from
+  `tests/timing_bounds.py`. A test whose only claim is a wall-clock bound
+  carries `@pytest.mark.timing`; the gating `pytest` job runs
+  `-m "not timing"` and the `pytest-timing` job reports those tests without
+  blocking.
+
+`scripts/check_portability.py` finds these patterns with `file:line` and the
+wanted form. It runs in the pre-commit hook on staged files and in the `ruff`
+job of `.github/workflows/lint.yml` on the whole tree. A reviewed exception
+carries `# portability: <reason>` on the line.
+
+Concrete rules:
+
+- **Before opening any pull request**, commit the branch and run
+  `scripts\ci_linux.ps1 <branch>` (the CI pytest command, parsed out of
+  `.github/workflows/test.yml`, in the WSL mirror `~/theDAW-ci`). It must pass.
+- **Green means six checks**: `pytest`, `ruff`, `lock`, `frontend-typecheck`,
+  `windows-x86_64` and `assistant-backend` all completed with conclusion
+  `success` on the pull request's CURRENT head sha, read through the API
+  (`GET /repos/{owner}/{repo}/commits/{sha}/check-runs`). A check from an
+  older head says nothing.
+- **Never rerun a failed job.** A rerun tests the stale merge with `main` the
+  first run made. Merge `main` into the branch and push; that starts a fresh
+  run on the current merge.
+- **Fix from the failing job's own log.** Read the log of the job that failed
+  and fix the named test or file. Never guess from the check's title.
+- **Never skip, xfail or deselect a test to get green**, and never move a test
+  under the `timing` marker to hide a functional failure.
+
 ## Project Overview
 
 Stable Audio 3 is a text-conditioned audio generation system. It generates audio from text prompts using a two-stage architecture: a DiT (diffusion transformer) generates latents, then the SAME autoencoder decodes them to 44.1kHz stereo audio.

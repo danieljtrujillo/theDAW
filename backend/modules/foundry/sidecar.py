@@ -31,6 +31,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 from backend.lib import paths
+from backend.lib.procs import is_zombie
 from backend.lib.launch_token import child_env
 
 log = logging.getLogger(__name__)
@@ -205,11 +206,25 @@ def _pid_listening_on_port(port: int) -> Optional[int]:
 
 
 def _terminate_pid(pid: int) -> bool:
+    """Signal ``pid`` to stop; True means signalled. On Windows ``os.kill`` is
+    TerminateProcess and the process is gone on return. Elsewhere SIGTERM is a
+    request, so this waits a short while for the process to go (a zombie
+    counts as gone) before the caller looks at the port."""
     try:
         os.kill(pid, signal.SIGTERM)
-        return True
     except OSError:
         return False
+    if os.name != "nt":
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            if is_zombie(pid):
+                break
+            time.sleep(0.05)
+    return True
 
 
 def probe() -> dict:

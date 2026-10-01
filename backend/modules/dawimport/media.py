@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from backend.lib.fswalk import walk_files
+
 # Audio sample extensions worth indexing/relinking (covers what DAWs reference).
 AUDIO_EXTS = {
     ".wav",
@@ -39,7 +41,7 @@ def build_media_index(project_dir: Path) -> dict[str, str]:
 
     def scan(root: Path, index: dict[str, str]) -> None:
         try:
-            for p in root.rglob("*"):
+            for p in walk_files(root):
                 try:
                     if not p.is_file():
                         continue

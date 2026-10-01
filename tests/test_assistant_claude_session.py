@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from backend.modules.assistant import claude_session as cs
+from tests.timing_bounds import prompt_seconds
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude_cli.py"
 
@@ -1435,7 +1436,7 @@ def test_kill_all_kills_every_session_concurrently(monkeypatch):
         elapsed = loop.time() - started
         # Sequential would be >= 5 x 0.6s = 3.0s; concurrent is ~one kill.
         assert state["peak"] == 5, state
-        assert elapsed < 2.0, elapsed
+        assert elapsed < prompt_seconds(2.0), elapsed
         assert cs.sessions == {}
         assert cs._conversation_locks == {}
         for proc in procs:

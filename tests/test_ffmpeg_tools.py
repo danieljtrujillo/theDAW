@@ -338,6 +338,7 @@ def test_env_var_may_name_the_executable_itself(
     assert ffmpeg_tools.candidate_paths() == [str(c)]
 
 
+# portability: winget is a Windows package manager; _unix_candidates has its own tests
 @pytest.mark.skipif(sys.platform != "win32", reason="winget locations are Windows")
 def test_winget_gyan_install_and_links_are_candidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

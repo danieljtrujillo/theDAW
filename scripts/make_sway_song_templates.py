@@ -68,9 +68,11 @@ GEN = REPO / "data" / "generations"
 
 # The one real VST3 on this machine that suits the concept (vocoder = the
 # electronic vocal tract). Only referenced if the file actually exists.
-VOCODER_VST = Path(
-    r"C:\Program Files\Common Files\VST3\TAL-Vocoder-2.vst3"
-    r"\Contents\x86_64-win\TAL-Vocoder-2.vst3"
+VOCODER_VST = (
+    Path(  # portability: one machine's own plugin, used only when the file exists
+        r"C:\Program Files\Common Files\VST3\TAL-Vocoder-2.vst3"
+        r"\Contents\x86_64-win\TAL-Vocoder-2.vst3"
+    )
 )
 
 # Column layout: (track name, color, stem filename). Order fixes the

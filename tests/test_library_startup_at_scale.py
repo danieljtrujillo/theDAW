@@ -18,12 +18,12 @@ resumes on the next start, and the progress a status request reports.
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.modules.library import router as library_router_module
@@ -40,6 +40,7 @@ from tests.library_scale_probe import timed_get_with_stacks
 from tests.test_library_search_parity import _main_build
 from tests.test_library_store import _seed_generate_entry
 from tests.test_security_b12 import real_app_context
+from tests.timing_bounds import prompt_seconds
 
 #: The library size the startup has to survive.
 ROWS = 200_000
@@ -51,7 +52,7 @@ ROWS = 200_000
 #: on seven runs the first probe of the index phase took 1.1 to 1.5 s while
 #: every later one took 0.05 to 0.3 s; the bound there is 2.5 s, still far
 #: under the multi-second stalls this test exists to catch.
-PROMPT_SEC = 2.5 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
+PROMPT_SEC = prompt_seconds(1.0, ci=2.5)
 
 _MAIN_INSERT = """
     INSERT INTO entries (
@@ -124,6 +125,7 @@ def _wait_for_phase(client: TestClient, wanted: set[str], timeout: float) -> dic
         time.sleep(0.05)
 
 
+@pytest.mark.timing
 def test_health_and_search_answer_while_a_200k_library_is_upgraded_and_indexed(
     tmp_path: Path, monkeypatch
 ) -> None:

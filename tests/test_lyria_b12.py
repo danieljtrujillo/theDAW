@@ -93,6 +93,7 @@ from typing import Iterator
 import pytest
 
 from backend.modules.lyria import sidecar
+from tests.timing_bounds import prompt_seconds
 
 
 @pytest.fixture(autouse=True)
@@ -376,7 +377,7 @@ def test_ensure_deps_does_not_block_stop_or_probe(monkeypatch, tmp_path):
         with sidecar._state_lock:
             pass  # acquiring it proves it isn't held by the in-progress install
         elapsed = time.monotonic() - start
-        assert elapsed < 1.0, (
+        assert elapsed < prompt_seconds(1.0), (
             f"_state_lock was held for {elapsed:.2f}s -- npm install is still "
             "blocking it (INT-003 regression)"
         )
@@ -645,7 +646,7 @@ def test_stop_during_readiness_wait_aborts_immediately(monkeypatch, tmp_path):
     elapsed = time.monotonic() - start
 
     assert not thread.is_alive()
-    assert elapsed < 2.0, (
+    assert elapsed < prompt_seconds(2.0), (
         f"ensure_running() took {elapsed:.2f}s -- a stop() during the "
         "readiness wait wasn't honoured promptly (item 3 regression)"
     )
@@ -934,7 +935,7 @@ def test_probe_adoption_runs_outside_state_lock(monkeypatch):
         with sidecar._state_lock:
             pass  # must acquire immediately -- proves the probe holds no lock
         elapsed = time.monotonic() - start
-        assert elapsed < 0.5, (
+        assert elapsed < prompt_seconds(0.5), (
             f"_state_lock was held for {elapsed:.2f}s while the network "
             "identity probe was still running (item 6 regression)"
         )

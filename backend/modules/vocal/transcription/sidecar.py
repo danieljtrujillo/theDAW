@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from backend.lib.launch_token import child_env
+from backend.lib.fswalk import walk_files
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def _dir_size(path: Path) -> int:
     files that vanish or deny access mid-walk are skipped."""
     total = 0
     try:
-        for f in path.rglob("*"):
+        for f in walk_files(path):
             try:
                 if f.is_file():
                     total += f.stat().st_size

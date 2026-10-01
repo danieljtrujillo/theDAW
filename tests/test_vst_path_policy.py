@@ -76,6 +76,23 @@ def test_empty_input_is_rejected(raw: str) -> None:
     assert exc.value.status == 400
 
 
+@pytest.mark.skipif(os.name == "nt", reason="case-sensitive paths are POSIX")
+def test_root_match_is_case_sensitive_off_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allowed = tmp_path / "vst3"
+    allowed.mkdir()
+    plugin = _bundle(allowed)
+    # A root spelled in another case is another directory here, so the plugin
+    # lies outside every allowed root.
+    monkeypatch.setattr(
+        path_policy, "allowed_roots", lambda: [Path(str(allowed).upper())]
+    )
+    with pytest.raises(path_policy.PluginPathError) as exc:
+        path_policy.check_plugin_path(str(plugin))
+    assert exc.value.status == 403
+
+
 @pytest.mark.skipif(os.name != "nt", reason="case-insensitive paths are Windows")
 def test_root_match_is_case_insensitive_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -115,12 +132,15 @@ def test_the_403_message_names_a_count_never_the_root_or_the_path(root: Path) ->
 def _link_dir(link: Path, target: Path) -> None:
     """A directory link the way users make them: a junction on Windows (no
     privilege needed), a symlink elsewhere."""
-    if os.name == "nt":
-        import _winapi
+    try:
+        if os.name == "nt":
+            import _winapi
 
-        _winapi.CreateJunction(str(target), str(link))
-    else:
-        link.symlink_to(target, target_is_directory=True)
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError) as e:
+        pytest.skip(f"this filesystem refuses a directory link: {e}")
 
 
 def _real_bundle(parent: Path, name: str = "Foo.vst3") -> Path:
@@ -236,7 +256,6 @@ def test_a_sibling_of_a_linked_bundle_on_the_other_drive_is_forbidden(
     assert exc.value.status == 403
 
 
-@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows")
 def test_a_junction_cycle_in_the_root_does_not_hang_the_check(
     scanned_root: Path, tmp_path: Path
 ) -> None:

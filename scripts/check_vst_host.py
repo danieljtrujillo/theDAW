@@ -30,7 +30,7 @@ HOST_ENV_VAR = "THEDAW_VST_HOST"
 #: win32, and only when this interpreter's ``subprocess`` exposes the flag
 #: (guarded with ``hasattr`` rather than a bare platform check).
 _NO_WINDOW_KWARGS: dict[str, int] = (
-    {"creationflags": subprocess.CREATE_NO_WINDOW}
+    {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
     if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW")
     else {}
 )

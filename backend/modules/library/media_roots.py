@@ -302,6 +302,10 @@ def _scan_files(root: str) -> Iterator[os.DirEntry]:
             with os.scandir(current) as it:
                 for entry in it:
                     try:
+                        # DirEntry.is_dir(follow_symlinks=False) is True for a
+                        # Windows junction, so the junction is named here.
+                        if entry.is_junction():
+                            continue
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(entry.path)
                             continue

@@ -69,6 +69,7 @@ from backend.lib.lan_paths import require_project_root_for_lan
 from backend.lib.known_paths import is_remote_or_device_path
 from backend.lib import paths
 from backend.lib.launch_token import child_env
+from backend.lib.procs import is_zombie
 
 log = logging.getLogger(__name__)
 
@@ -267,7 +268,9 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    # A child that exited and was not reaped yet still answers signal 0 on
+    # Linux and macOS; a zombie runs nothing, so it is gone.
+    return not is_zombie(pid)
 
 
 def _editor_alive(plugin_path: str) -> bool:

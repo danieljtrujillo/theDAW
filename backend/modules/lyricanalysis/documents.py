@@ -209,13 +209,15 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
             tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             # Windows fails the rename while any other handle has either file
             # open — a concurrent reader is enough. The write itself is done;
-            # only the publish needs the retry.
+            # only the publish needs the retry. Off Windows a rename never
+            # fails for an open handle, so a PermissionError there is a real
+            # permission fault and is raised at once.
             for attempt in range(12):
                 try:
                     os.replace(tmp, path)
                     return
                 except PermissionError:
-                    if attempt == 11:
+                    if os.name != "nt" or attempt == 11:
                         raise
                     time.sleep(0.02)
         finally:
@@ -248,7 +250,9 @@ def _read_text(path: Path) -> Optional[str]:
         except FileNotFoundError:
             return None
         except PermissionError:
-            if attempt == 11:
+            # The sharing violation is Windows only; elsewhere this is a real
+            # permission fault and no retry helps.
+            if os.name != "nt" or attempt == 11:
                 raise
             time.sleep(0.02)
     return None

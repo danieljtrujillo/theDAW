@@ -34,6 +34,7 @@ from tests.vst_host_client import (
     ramp,
     run_host,
 )
+from tests.timing_bounds import prompt_seconds
 
 pytestmark = pytest.mark.skipif(
     host_exe() is None,
@@ -694,7 +695,7 @@ def test_render_refuses_an_output_larger_than_a_wav(tmp_path):
         timeout=20,
     )
     elapsed = time.perf_counter() - start
-    assert elapsed < 20, (
+    assert elapsed < prompt_seconds(20), (
         f"the size refusal took {elapsed:.1f}s instead of failing immediately"
     )
     assert proc.returncode == 1, proc.stdout + proc.stderr
@@ -814,7 +815,11 @@ def host_pid_is_running(pid: int | None) -> bool:
         return False
     try:
         proc = psutil.Process(pid)
-        return proc.is_running() and proc.name().lower() == "thedaw-vst-host.exe"
+        return (
+            proc.is_running()
+            and proc.status() != psutil.STATUS_ZOMBIE
+            and proc.name().lower() == "thedaw-vst-host.exe"
+        )
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
 

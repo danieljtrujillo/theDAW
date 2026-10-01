@@ -535,7 +535,7 @@ def launch_installer() -> dict:
     proc = subprocess.Popen(  # a fixed path, never request-supplied
         ["cmd.exe", "/c", str(_INSTALLER)],
         cwd=str(_INSTALLER.parent),
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
+        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
         close_fds=True,
         env=child_env(),
     )

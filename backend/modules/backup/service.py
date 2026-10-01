@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import threading
@@ -41,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 from backend.lib import known_paths, paths
+from backend.lib.fswalk import walk_files
 
 log = logging.getLogger(__name__)
 
@@ -170,17 +170,16 @@ def _iter_root_files(spec: RootSpec) -> Iterator[tuple[Path, str]]:
         return
     if not base.is_dir():
         return
-    for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIR_NAMES)
-        for fn in sorted(filenames):
-            if _is_backup_zip(fn):
-                continue
-            p = Path(dirpath) / fn
-            try:
-                rel = p.relative_to(base).as_posix()
-            except ValueError:
-                continue
-            yield p, rel
+    # walk_files follows a linked subfolder (symlink or junction) once, so a
+    # backup holds the same members on every platform.
+    for p in walk_files(base, skip_dir=lambda d: d in _SKIP_DIR_NAMES):
+        if _is_backup_zip(p.name):
+            continue
+        try:
+            rel = p.relative_to(base).as_posix()
+        except ValueError:
+            continue
+        yield p, rel
 
 
 def compute_manifest(time_budget_sec: float = _MANIFEST_TIME_BUDGET_SEC) -> dict:
