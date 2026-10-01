@@ -96,6 +96,10 @@ export interface VstLiveEntryState {
   /** The open editor's size in physical px, as the host last reported it; null
    *  while the editor is closed or before the host has said. */
   editorSize: { w: number; h: number } | null;
+  /** The box the app asked the host to open the editor in, physical px, until
+   *  the host's acknowledgement of that request has been seen. See
+   *  `setEditorOpen`. */
+  editorRequest: { w: number; h: number } | null;
   /** Whether the plugin holds the entry's saved settings, or started at its
    *  defaults because the host could not restore them. */
   stateOrigin: VstStateOrigin;
@@ -124,6 +128,7 @@ const EMPTY: VstLiveEntryState = {
   clamped: false,
   editorOpen: false,
   editorSize: null,
+  editorRequest: null,
   // Nothing saved, nothing to mismatch: defaults are this entry's state.
   stateOrigin: 'live',
 };
@@ -150,6 +155,9 @@ interface VstLiveState {
   /** The host's word on the editor window: open or closed, and the size the
    *  plugin's view has now. A closed editor has no size. */
   setEditorOpen: (entryId: string, open: boolean, size?: { w: number; h: number }) => void;
+  /** Note the box an `open_editor` request asks for (null for a floating
+   *  editor). A new request forgets the size of the editor before it. */
+  setEditorRequest: (entryId: string, request: { w: number; h: number } | null) => void;
   /** Record whether the running plugin holds the entry's saved settings. Set by
    *  the session registry when it spawns (from the state's origin) and cleared
    *  back to `live` by the capture path once a live state lands on the entry. */
@@ -222,12 +230,28 @@ export const useVstLiveStore = create<VstLiveState>()(
         }),
       })),
 
+    // The host reports the editor twice when it opens: first the size the
+    // plugin's view really has, then an acknowledgement of `open_editor` that
+    // repeats the box the app asked for. Taken as a size, that second message
+    // put the requested box back over the real one, and the window showed the
+    // plugin cut to the opening box. So the first report that equals the
+    // pending request is the acknowledgement: it is consumed and sizes nothing.
     setEditorOpen: (entryId, open, size) =>
       set((s) => {
-        const prev = s.entries[entryId]?.editorSize ?? null;
-        const editorSize = !open ? null : size && size.w > 0 && size.h > 0 ? { w: size.w, h: size.h } : prev;
-        return { entries: patch(s.entries, entryId, { editorOpen: open, editorSize }) };
+        const cur = s.entries[entryId];
+        const prev = cur?.editorSize ?? null;
+        const request = cur?.editorRequest ?? null;
+        if (!open) return { entries: patch(s.entries, entryId, { editorOpen: false, editorSize: null, editorRequest: null }) };
+        if (!size || size.w <= 0 || size.h <= 0) return { entries: patch(s.entries, entryId, { editorOpen: true }) };
+        if (request && size.w === request.w && size.h === request.h) {
+          return { entries: patch(s.entries, entryId, { editorOpen: true, editorRequest: null }) };
+        }
+        const editorSize = prev && prev.w === size.w && prev.h === size.h ? prev : { w: size.w, h: size.h };
+        return { entries: patch(s.entries, entryId, { editorOpen: true, editorSize }) };
       }),
+
+    setEditorRequest: (entryId, request) =>
+      set((s) => ({ entries: patch(s.entries, entryId, { editorRequest: request, editorSize: null }) })),
 
     setStateOrigin: (entryId, origin, reason) =>
       set((s) => ({

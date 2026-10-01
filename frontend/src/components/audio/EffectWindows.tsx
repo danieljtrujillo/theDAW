@@ -425,7 +425,7 @@ const EffectWindowCard: React.FC<{
     ? { width: `${win.w}px`, height: `${win.h}px` }
     : kind === 'vst'
       ? vstOwnsSession && vstNatural
-        ? { width: `min(${vstNatural.w + 20}px, 92vw)`, height: `min(${vstNatural.h + 80}px, 85vh)` }
+        ? { width: `min(${vstNatural.w + 36}px, calc(100vw - 16px))`, height: `min(${vstNatural.h + 96}px, calc(100vh - 16px))` }
         : vstOwnsSession
           ? { width: 'min(500px, 92vw)', height: 'min(400px, 85vh)' }
           : { width: 'min(360px, 92vw)' }
@@ -435,7 +435,7 @@ const EffectWindowCard: React.FC<{
           : { width: 'min(540px, 92vw)', maxHeight: '78vh' }
         : { width: 'min(500px, 92vw)', maxHeight: '78vh' };
   const applied: React.CSSProperties = vstFits
-    ? { minWidth: 'min(360px, 92vw)', maxWidth: '92vw', maxHeight: '85vh' }
+    ? { minWidth: 'min(360px, 92vw)', maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100vh - 16px)' }
     : size;
 
   // An undragged window opens beside the FX list it came from, or at the right
