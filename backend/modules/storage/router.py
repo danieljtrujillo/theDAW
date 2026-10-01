@@ -82,7 +82,7 @@ def _dir_stats(path: Path) -> dict:
             with os.scandir(current) as it:
                 for entry in it:
                     try:
-                        if entry.is_symlink():
+                        if entry.is_symlink() or entry.is_junction():
                             continue
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(Path(entry.path))
@@ -97,7 +97,7 @@ def _dir_stats(path: Path) -> dict:
 
 
 def _cached_dir_stats(path: Path, refresh: bool) -> dict:
-    key = str(path).lower()
+    key = os.path.normcase(str(path))
     now = time.monotonic()
     with _size_lock:
         hit = _size_cache.get(key)
@@ -190,7 +190,7 @@ def _windows_locations() -> list[tuple[str, str, Path]]:
     ]
     seen: set[str] = set()
     for i, d in enumerate(_local_search_dirs()):
-        norm = str(d).lower().rstrip("\\/")
+        norm = os.path.normcase(str(d)).rstrip("\\/")
         if norm in seen:
             continue
         seen.add(norm)
@@ -1181,7 +1181,7 @@ def _allowed_open_roots() -> list[str]:
     distro = _wsl_distro()
     if distro:
         roots.append(f"\\\\wsl.localhost\\{distro}")
-    return [os.path.normpath(r).lower().rstrip("\\/") for r in roots]
+    return [os.path.normcase(os.path.normpath(r)).rstrip("\\/") for r in roots]
 
 
 @router.post("/open", dependencies=[Depends(refuse_cross_site)])
@@ -1194,7 +1194,7 @@ def storage_open(body: OpenBody) -> dict:
     token."""
     target = body.path.strip()
     location = os.path.normpath(target) if target else target
-    normalized = location.lower().rstrip("\\/")
+    normalized = os.path.normcase(location).rstrip("\\/")
     if not any(
         normalized == root
         or normalized.startswith(root + "\\")

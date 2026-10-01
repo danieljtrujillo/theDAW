@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -136,19 +137,43 @@ def inspect_midi(path: Path) -> MidiInspection:
     return report
 
 
+def _walk_files(root: Path):
+    """Every file under ``root``. Directory symlinks are followed the way a
+    Windows junction is; each real directory is entered once."""
+    visited: set[tuple[int, int]] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        kept = []
+        for d in dirnames:
+            try:
+                st = os.stat(os.path.join(dirpath, d))
+            except OSError:
+                continue
+            if st.st_ino:
+                if (st.st_dev, st.st_ino) in visited:
+                    continue
+                visited.add((st.st_dev, st.st_ino))
+            kept.append(d)
+        dirnames[:] = kept
+        for name in filenames:
+            yield Path(dirpath) / name
+
+
 def discover_midi_files(roots: list[Path]) -> list[Path]:
     files: dict[Path, Path] = {}
     for root in roots:
         if not root.exists():
             continue
-        for pattern in ("*.mid", "*.midi"):
-            for path in root.rglob(pattern):
+        for path in _walk_files(root):
+            if path.suffix.lower() in (".mid", ".midi"):
                 files[path.resolve()] = path
     return sorted(files.values(), key=lambda p: str(p).lower())
 
 
 def discover_databases(root: Path) -> list[Path]:
-    return sorted(root.rglob("*.db"), key=lambda p: str(p).lower())
+    return sorted(
+        (p for p in _walk_files(root) if p.suffix.lower() == ".db"),
+        key=lambda p: str(p).lower(),
+    )
 
 
 def inspect_midi_databases(

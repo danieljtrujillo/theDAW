@@ -82,6 +82,7 @@ from tests.library_scale_fixture import (
     database_bytes,
     remove_database,
 )
+from tests.timing_bounds import prompt_seconds
 
 LIBRARY_PREFIX = "/api/library"
 LINEAGE_PREFIX = "/api/lineage-scale"
@@ -99,7 +100,9 @@ SIZE_BUDGET_BYTES = 2 * 1024 * 1024
 #: 5 s costs the ceiling no teeth and leaves room for a 2-vCPU CI runner,
 #: where ``/_graph/all`` (886 ms here) and a cold ``/rankings`` are the slow
 #: pair. ``THEDAW_SCALE_TIME_BUDGET`` raises it on a machine that needs more.
-TIME_BUDGET_SECONDS = float(os.environ.get("THEDAW_SCALE_TIME_BUDGET", "5.0"))
+TIME_BUDGET_SECONDS = prompt_seconds(
+    float(os.environ.get("THEDAW_SCALE_TIME_BUDGET", "5.0"))
+)
 
 #: The ONLY routes allowed past :data:`SIZE_BUDGET_BYTES`, each with the
 #: reason it is allowed. Every one is documented, every one is deliberate,

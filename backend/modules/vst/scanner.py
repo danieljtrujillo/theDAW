@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from dataclasses import dataclass, asdict, fields
 from backend.lib.launch_token import child_env
+from backend.lib.fswalk import walk_files
 
 log = logging.getLogger(__name__)
 
@@ -279,7 +280,7 @@ def _artifact_size_mb(artifact: Path) -> float:
     """Size of a plugin on disk, the whole bundle, or the single module file."""
     try:
         if artifact.is_dir():
-            total = sum(f.stat().st_size for f in artifact.rglob("*") if f.is_file())
+            total = sum(f.stat().st_size for f in walk_files(artifact) if f.is_file())
         else:
             total = artifact.stat().st_size
     except OSError:

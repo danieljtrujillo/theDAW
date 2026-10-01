@@ -318,6 +318,7 @@ def _bind_listener(port: int) -> socket.socket:
     try:
         if sys.platform == "win32":
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        # portability: IPv4 loopback by design (the headset forward dials 127.0.0.1); _port_number_is_free probes 0.0.0.0, :: and ::1 before this bind
         sock.bind(("127.0.0.1", port))
     except OSError:
         sock.close()

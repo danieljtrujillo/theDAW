@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import backend.modules.assistant.permissions as p
+from tests.platform_patch import patch_platform
 from backend.modules.assistant.permissions import (
     AGENT_TOOLS,
     AMBIGUOUS_CD_PATH,
@@ -614,7 +615,7 @@ def test_case_variant_is_case_sensitive_on_posix_roots(monkeypatch):
     """On a case-sensitive filesystem `Backend/` is a different directory."""
     import backend.modules.assistant.permissions as permissions
 
-    monkeypatch.setattr(permissions.sys, "platform", "linux")
+    patch_platform(monkeypatch, permissions, "linux")
     posix_root = Path("/srv/theDAW")
 
     assert self_modify_path("Edit", {"file_path": "Backend/rag.py"}, posix_root) is None
@@ -627,7 +628,7 @@ def test_case_variant_is_case_sensitive_on_posix_roots(monkeypatch):
 def test_windows_platform_is_case_insensitive_even_for_posix_style_root(monkeypatch):
     import backend.modules.assistant.permissions as permissions
 
-    monkeypatch.setattr(permissions.sys, "platform", "win32")
+    patch_platform(monkeypatch, permissions, "win32")
 
     assert (
         self_modify_path("Edit", {"file_path": "Backend/rag.py"}, Path("/srv/theDAW"))

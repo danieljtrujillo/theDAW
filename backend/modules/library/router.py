@@ -97,6 +97,7 @@ from backend.modules.analysis.engine import profile_of_row
 from backend.core.startup import register_startup_hook
 from backend.lib import known_paths, paths
 from backend.lib.atomic import atomic_write
+from backend.lib.fswalk import walk_files
 from backend.lib.cross_site import (
     refuse_cross_site,
     require_loopback_or_launch_token,
@@ -1806,7 +1807,7 @@ def import_folder(
             "status_url": f"{store.api_prefix}/import-jobs/{job.id}",
         }
 
-    paths = root.rglob("*") if req.recursive else root.iterdir()
+    paths = walk_files(root) if req.recursive else root.iterdir()
     files = sorted(
         (p for p in paths if p.is_file() and p.suffix.lower() in AUDIO_EXTS),
         key=lambda p: str(p).lower(),

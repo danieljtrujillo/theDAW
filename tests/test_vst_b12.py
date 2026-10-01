@@ -84,7 +84,7 @@ from backend.lib.known_paths import is_remote_or_device_path  # noqa: E402
 # Windows. Elsewhere they are inert characters in a filename: nothing resolves
 # them, nothing reaches a network through them, and a 404 is the right answer,
 # so these cases have nothing to assert off Windows.
-_WINDOWS_ONLY = pytest.mark.skipif(
+_WINDOWS_ONLY = pytest.mark.skipif(  # portability: NT path spellings are inert file names elsewhere
     sys.platform != "win32",
     reason="backslash path spellings and NT object-manager prefixes are Windows-only",
 )
@@ -1318,11 +1318,16 @@ def test_root_contains_is_public_and_case_insensitive_on_this_platform(
 
 
 def _make_junction(link: Path, target: Path) -> bool:
-    """``mklink /J`` under ``cmd``; returns False (skip the test) when
-    junction creation is unavailable on this machine/user account rather
+    """A directory link the way users make one: ``mklink /J`` under ``cmd`` on
+    Windows, a directory symlink elsewhere. Returns False (skip the test) when
+    the link cannot be made on this machine/user account/filesystem rather
     than failing the whole suite over an environment gap."""
     if sys.platform != "win32":
-        return False
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return False
+        return link.is_dir()
     result = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(link), str(target)],
         capture_output=True,

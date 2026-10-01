@@ -22,6 +22,7 @@ from backend.modules.notation.expression import (
     level_for_velocity,
 )
 from backend.modules.sheetimport.parser import parse_score_path
+from tests.timing_bounds import prompt_seconds
 
 
 def _score(notes: list[tuple[float, float, int, int]]) -> stream.Score:
@@ -377,7 +378,7 @@ def test_a_hairpin_on_every_bar_of_160_parses_in_under_two_seconds(tmp_path):
     parsed = parse_score_path(str(sheet))
     elapsed = time.perf_counter() - began
 
-    assert elapsed < 2.0, f"{elapsed:.1f} s"
+    assert elapsed < prompt_seconds(2.0), f"{elapsed:.1f} s"
     cc11 = [c for c in parsed["tracks"][0]["controls"] if c["controller"] == 11]
     assert len(cc11) > 160, "every hairpin shapes CC11"
     assert all(0 < c["value"] <= 127 for c in cc11)

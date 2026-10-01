@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from backend.lib import launch_token
+from tests.platform_patch import patch_platform
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SECRET = "launch-secret-for-tests"
@@ -261,9 +262,9 @@ def _storage_open_under(
     from backend.modules.storage import router as storage_router
 
     models.mkdir()
-    root = os.path.normpath(str(models)).lower()
+    root = os.path.normcase(os.path.normpath(str(models)))
     monkeypatch.setattr(storage_router, "_allowed_open_roots", lambda: [root])
-    monkeypatch.setattr(storage_router.sys, "platform", "win32")
+    patch_platform(monkeypatch, storage_router, "win32")
     return storage_router, _Spawns().install(monkeypatch, storage_router)
 
 

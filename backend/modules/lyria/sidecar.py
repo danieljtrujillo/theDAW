@@ -68,6 +68,7 @@ from typing import IO, Callable, Iterator, Optional
 from backend.lib import paths
 from backend.lib.atomic import atomic_write
 from backend.lib.launch_token import child_env
+from backend.lib.procs import wait_gone
 
 log = logging.getLogger(__name__)
 
@@ -1600,7 +1601,9 @@ def _pending_projects() -> list[str]:
 def deps_pending(project: Path) -> bool:
     """True when an Update moved ``project`` to a commit with other
     dependencies and their npm install has not succeeded since."""
-    return _norm(str(project)) in _pending_projects()
+    key = _norm(str(project))
+    # A record written before path case was kept off Windows is lower case.
+    return bool({key, key.lower()} & set(_pending_projects()))
 
 
 def _set_deps_pending(project: Path, pending: bool) -> None:
@@ -1608,9 +1611,11 @@ def _set_deps_pending(project: Path, pending: bool) -> None:
     the record cannot be written."""
     key = _norm(str(project))
     current = _pending_projects()
-    if (key in current) == pending:
+    # A record written before path case was kept off Windows is lower case.
+    keys = {key, key.lower()}
+    if bool(keys & set(current)) == pending:
         return
-    projects = [*current, key] if pending else [p for p in current if p != key]
+    projects = [*current, key] if pending else [p for p in current if p not in keys]
     atomic_write(_DEPS_PENDING_FILE, json.dumps({"projects": projects}, indent=2))
 
 
@@ -2946,13 +2951,17 @@ def _port_listeners(port: int) -> Optional[list[_Listener]]:
 
 
 def _norm(path: str) -> str:
-    return path.replace("\\", "/").rstrip("/").lower()
+    """``path`` with ``/`` separators; lower case on Windows only, where case
+    is not part of a path. Elsewhere two case variants are two folders."""
+    path = path.replace("\\", "/").rstrip("/")
+    return path.lower() if os.name == "nt" else path
 
 
 def _runs_from_checkout(listener: _Listener, project: Path) -> bool:
     """True when the process's working directory is the checkout (``npm run
     dev`` runs there) or its command line names a file inside it. Compared
-    case-insensitively with both separators, as Windows mixes them."""
+    with both separators, as Windows mixes them, and without regard to case
+    on Windows only."""
     root = _norm(str(project))
     cwd = _norm(listener.cwd)
     if cwd and (cwd == root or cwd.startswith(root + "/")):
@@ -2993,7 +3002,10 @@ def _kill_listener(listener: _Listener) -> None:
             member.terminate()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
-    _gone, alive = psutil.wait_procs(tree, timeout=_TERMINATE_WAIT_SEC)
+    # The tree has another parent. Until that parent reaps a member it is a
+    # zombie, which psutil.wait_procs counts as running for the whole timeout;
+    # wait_gone counts a zombie as gone.
+    alive = wait_gone(tree, _TERMINATE_WAIT_SEC)
     for member in alive:
         try:
             member.kill()

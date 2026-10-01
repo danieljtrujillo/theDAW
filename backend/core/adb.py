@@ -39,35 +39,44 @@ def resolve_adb_path(*env_vars: str) -> Optional[str]:
 
 
 def _common_adb_candidates() -> Iterable[Path]:
-    """Best-effort Windows defaults for machines with Android Studio/Oculus tools."""
+    """Best-effort defaults for machines with Android Studio/Oculus tools: the
+    SDK environment variables everywhere, plus each platform's own install
+    locations."""
 
+    windows = os.name == "nt"
+    adb = "adb.exe" if windows else "adb"
     sdk_roots = []
     for env_name in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
         value = os.getenv(env_name)
         if value:
             sdk_roots.append(Path(value).expanduser())
 
-    local_app_data = os.getenv("LOCALAPPDATA")
-    if local_app_data:
-        sdk_roots.append(Path(local_app_data) / "Android" / "Sdk")
-
-    sdk_roots.append(Path.home() / "AppData" / "Local" / "Android" / "Sdk")
-    sdk_roots.extend((Path("C:/Android"), Path("C:/platform-tools")))
+    if windows:
+        local_app_data = os.getenv("LOCALAPPDATA")
+        if local_app_data:
+            sdk_roots.append(Path(local_app_data) / "Android" / "Sdk")
+        sdk_roots.append(Path.home() / "AppData" / "Local" / "Android" / "Sdk")
+        sdk_roots.extend((Path("C:/Android"), Path("C:/platform-tools")))
+    else:
+        sdk_roots.append(Path.home() / "Android" / "Sdk")
+        sdk_roots.append(Path.home() / "Library" / "Android" / "sdk")
 
     seen: set[str] = set()
 
     def unique(path: Path) -> Iterable[Path]:
-        key = str(path).lower()
+        key = os.path.normcase(str(path))
         if key not in seen:
             seen.add(key)
             yield path
 
     for root in sdk_roots:
         if root.name.lower() == "platform-tools":
-            yield from unique(root / "adb.exe")
+            yield from unique(root / adb)
         else:
-            yield from unique(root / "platform-tools" / "adb.exe")
+            yield from unique(root / "platform-tools" / adb)
 
+    if not windows:
+        return
     for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
         value = os.getenv(env_name)
         if not value:

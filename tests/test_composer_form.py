@@ -15,6 +15,7 @@ import pytest
 from backend.modules.composer.form import plan_form, realize_form
 from backend.modules.composer.spec import SATB
 from backend.modules.composer.voiceleading import check_parts, parse_key
+from tests.timing_bounds import prompt_seconds
 
 Q = 960
 
@@ -370,7 +371,7 @@ def test_a_two_hundred_bar_sonata_realizes_in_under_thirty_seconds() -> None:
     took = time.perf_counter() - t0
     assert plan["bars"] >= 200
     assert plan["flag_count"] == 0
-    assert took < 30, f"{took:.1f} s"
+    assert took < prompt_seconds(30), f"{took:.1f} s"
 
 
 def test_bad_requests_are_refused() -> None:

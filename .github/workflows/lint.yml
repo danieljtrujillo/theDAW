@@ -41,3 +41,10 @@ jobs:
         run: ruff check .
       - name: ruff format --check
         run: ruff format --check .
+      # CLAUDE.md hard rule 5. Standard library only, so it needs nothing
+      # installed: code written on Windows that behaves differently on this
+      # runner (bare subprocess flags, scans that stop at a symlink, path case
+      # folding, zombie liveness probes, ...) fails here in seconds with
+      # file:line and the wanted form, before pytest spends minutes on it.
+      - name: portability check
+        run: python scripts/check_portability.py

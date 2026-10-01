@@ -45,6 +45,7 @@ from backend.modules.library.db import (
 )
 from tests.test_library_store import _seed_generate_entry
 from tests.test_security_b12 import real_app_context
+from tests.timing_bounds import prompt_seconds
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -621,7 +622,9 @@ def test_the_backend_starts_while_the_index_of_mains_library_is_built(
             )
             took = time.perf_counter() - began
             assert during.status_code == 200
-            assert took < 1.0, f"a search during the build took {took:.2f} s"
+            assert took < prompt_seconds(1.0), (
+                f"a search during the build took {took:.2f} s"
+            )
             body = during.json()
             # Only the row the write indexed is in the index yet. (Its page
             # row is hidden: it has no folder on disk, like every row here.)

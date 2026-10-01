@@ -143,6 +143,7 @@ BINDS = [
     "ipv4",
     pytest.param(
         "dual-stack",
+        # portability: needs a real IPv6 stack; the ipv4 case runs everywhere
         marks=pytest.mark.skipif(not _has_dual_stack(), reason="no IPv6 here"),
     ),
 ]

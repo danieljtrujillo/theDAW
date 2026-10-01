@@ -141,7 +141,18 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    return not _is_zombie(pid)
+
+
+def _is_zombie(pid: int) -> bool:
+    """A parent that exited and was not reaped still answers signal 0 on
+    Linux; it runs nothing, so it counts as gone. (This script runs on its
+    own, so it reads /proc itself.)"""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            return f.read().rpartition(b")")[2].split()[0] == b"Z"
+    except (OSError, IndexError):
+        return False
 
 
 def _read_state(path: str | None) -> bytes:

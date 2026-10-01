@@ -20,6 +20,7 @@ tab.
 from __future__ import annotations
 
 import json
+import os
 import logging
 import subprocess
 import time
@@ -150,7 +151,11 @@ def _tree_dirty() -> bool:
 
 def _find_bash() -> Optional[str]:
     """git-subrepo is a bash tool; find a bash to run it through (Git Bash)."""
-    for cand in ("bash", r"C:\Program Files\Git\bin\bash.exe", "/usr/bin/bash"):
+    if os.name == "nt":
+        candidates = ("bash", r"C:\Program Files\Git\bin\bash.exe")
+    else:
+        candidates = ("bash", "/usr/bin/bash", "/bin/bash")
+    for cand in candidates:
         try:
             r = subprocess.run(
                 [cand, "-c", "true"], capture_output=True, timeout=10, env=child_env()

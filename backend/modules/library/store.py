@@ -52,6 +52,7 @@ from .provider import (
     provider_wire_fields,
 )
 from backend.lib import paths
+from backend.lib.fswalk import walk_files
 
 log = logging.getLogger(__name__)
 
@@ -2471,7 +2472,7 @@ class LibraryStore:
             if not root.is_dir():
                 job.finish("failed", error=f"not a folder: {job.folder}")
                 return job
-            walk = root.rglob("*") if job.recursive else root.iterdir()
+            walk = walk_files(root) if job.recursive else root.iterdir()
             files = sorted(
                 (p for p in walk if p.is_file() and p.suffix.lower() in AUDIO_EXTS),
                 key=lambda p: str(p).lower(),

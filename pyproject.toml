@@ -242,6 +242,13 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    # A test whose only claim is a wall-clock bound. The gating `pytest` job
+    # runs -m "not timing"; the `pytest-timing` job reports these and never
+    # blocks a merge. Bounds come from tests/timing_bounds.py (CLAUDE.md hard
+    # rule 5).
+    "timing: the test's only claim is a wall-clock bound (non-blocking pytest-timing job)",
+]
 
 [tool.ruff]
 exclude = [

@@ -987,9 +987,11 @@ def test_a_powershell_failure_with_no_path_is_an_error_with_its_reason(
     assert caught.value.timed_out is False
 
 
-_needs_powershell = pytest.mark.skipif(
-    sys.platform != "win32" or shutil.which("powershell.exe") is None,
-    reason="needs Windows PowerShell",
+_needs_powershell = (
+    pytest.mark.skipif(  # portability: runs the real Windows PowerShell picker script
+        sys.platform != "win32" or shutil.which("powershell.exe") is None,
+        reason="needs Windows PowerShell",
+    )
 )
 
 

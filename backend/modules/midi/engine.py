@@ -1004,6 +1004,8 @@ def _ensure_piano_checkpoint() -> Path:
                 os.replace(tmp, dest)
                 break
             except PermissionError as e:  # transient lock (AV) — back off and retry
+                if os.name != "nt":
+                    raise  # no such lock off Windows: a real permission fault
                 last_err = e
                 time.sleep(1.0)
         else:

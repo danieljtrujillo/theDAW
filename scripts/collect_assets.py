@@ -80,8 +80,24 @@ ARES_SIDECAR_GLOBS = ("{stem}-meta.json", "{stem}-frames", "{stem}.json")
 def walk(root: Path) -> Iterable[Path]:
     if not root.is_dir():
         return
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+    # followlinks=True enters a directory symlink the way every walk enters a
+    # Windows junction; the visited set keeps a link cycle finite.
+    visited: set[tuple[int, int]] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        kept = []
+        for d in dirnames:
+            if d in SKIP_DIRS:
+                continue
+            try:
+                st = os.stat(os.path.join(dirpath, d))
+            except OSError:
+                continue
+            if st.st_ino:
+                if (st.st_dev, st.st_ino) in visited:
+                    continue
+                visited.add((st.st_dev, st.st_ino))
+            kept.append(d)
+        dirnames[:] = kept
         for name in filenames:
             yield Path(dirpath) / name
 

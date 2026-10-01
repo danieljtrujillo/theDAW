@@ -26,6 +26,7 @@ import plistlib
 from pathlib import Path
 
 from backend.modules.dawimport.models import DawClip, DawProject, DawTrack
+from backend.lib.fswalk import walk_files
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ def _discover_audio(directory: Path, daw: DawProject, prefix: str = "") -> int:
 
     added = 0
     try:
-        files = sorted(directory.rglob("*"))
+        files = sorted(walk_files(directory))
     except Exception as e:
         daw.warnings.append(f"Could not scan {directory.name}/: {e}")
         return 0

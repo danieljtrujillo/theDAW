@@ -70,9 +70,11 @@ MARKER = r"native\vst-host\.build-declined"
 OFFER_CALL = r'-File "install\setup.ps1" -VstHost'
 
 _POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
-requires_powershell = pytest.mark.skipif(
-    sys.platform != "win32" or _POWERSHELL is None,
-    reason="needs Windows PowerShell to parse and run the .ps1 fragments",
+requires_powershell = (
+    pytest.mark.skipif(  # portability: parses and runs theDAW.bat's .ps1 fragments
+        sys.platform != "win32" or _POWERSHELL is None,
+        reason="needs Windows PowerShell to parse and run the .ps1 fragments",
+    )
 )
 
 

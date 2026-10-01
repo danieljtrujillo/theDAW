@@ -41,6 +41,7 @@ from tests.lineagescale_fixtures import (
     link_rows,
     metadata_blob_size,
 )
+from tests.timing_bounds import prompt_seconds
 
 PREFIX = "/api/lineage-scale"
 
@@ -1229,7 +1230,9 @@ def test_the_summary_is_computed_once_and_then_served_from_the_cache(
     cold = client.get(f"{PREFIX}/summary")
     cold_seconds = time.perf_counter() - started
     assert cold.status_code == 200
-    assert cold_seconds < 3.0, f"first summary took {cold_seconds:.2f} s"
+    assert cold_seconds < prompt_seconds(3.0), (
+        f"first summary took {cold_seconds:.2f} s"
+    )
 
     warm = client.get(f"{PREFIX}/summary")
     # Every number is the same; the one thing that changes is the honest

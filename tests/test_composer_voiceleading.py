@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from backend.modules.composer.meter import MeterGrid, time_signature, sanitize_meter
 from backend.modules.composer.voiceleading import check_parts, parse_key
+from tests.timing_bounds import prompt_seconds
 
 Q = 960
 C = parse_key("C")
@@ -205,7 +206,7 @@ def test_bar_at_a_far_tick_is_arithmetic_past_the_last_meter() -> None:
     began = time.perf_counter()
     bar = grid.bar_at(far)
     elapsed = time.perf_counter() - began
-    assert elapsed < 0.05, f"{elapsed:.3f} s"
+    assert elapsed < prompt_seconds(0.05), f"{elapsed:.3f} s"
     last_start = walked[5][1]
     assert bar.bar == 5 + (far - last_start) // 2880
     assert bar.tick <= far < bar.tick + bar.ticks

@@ -293,6 +293,46 @@ def test_identical_content_under_two_names_is_not_superseded(tmp_path: Path):
 
 
 @pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows refuses to move a file with an open handle; the test below "
+    "covers that side",
+)
+def test_open_old_file_is_moved_on_posix_and_the_reader_keeps_its_bytes(
+    tmp_path: Path,
+):
+    """Linux and macOS move a file under an open handle. The superseded copy
+    lands in deprecated/, the row names the new file, and the reader that held
+    the old file open still reads all of it."""
+    db = _db(tmp_path)
+    notation = tmp_path / "e" / "notation"
+    notation.mkdir(parents=True)
+    old = notation / "Old__full__guitar.alphatex"
+    old.write_text("OLD", encoding="utf-8")
+    db.add_notation_artifact(
+        artifact_id="e__full__guitar__alphatex",
+        entry_id="e",
+        kind="alphatex",
+        path=str(old),
+    )
+    new = notation / "New__full__guitar.alphatex"
+    new.write_text("NEW", encoding="utf-8")
+    with old.open("rb") as held:
+        db.add_notation_artifact(
+            artifact_id="e__full__guitar__alphatex",
+            entry_id="e",
+            kind="alphatex",
+            path=str(new),
+        )
+        assert held.read() == b"OLD"
+    row = db.get_notation_artifact("e__full__guitar__alphatex")
+    assert row is not None and row["path"] == str(new)
+    assert len(db.list_notation_artifacts("e", kind="alphatex")) == 1
+    assert not old.exists()
+    moved = notation / "deprecated" / old.name
+    assert moved.is_file() and moved.read_text(encoding="utf-8") == "OLD"
+
+
+@pytest.mark.skipif(
     sys.platform != "win32",
     reason="POSIX allows renaming a file with an open handle, so the OS would "
     "never refuse the move and the assertion would be vacuous",

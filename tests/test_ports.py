@@ -276,11 +276,17 @@ def test_is_ours_requires_binary_entry_point_and_this_checkout(
     assert ports._is_ours(name, cmdline, cwd) is expected
 
 
-def test_same_tree_ignores_separator_and_case():
+def test_same_tree_ignores_separator_and_folds_case_on_windows_only():
     root = str(REPO_ROOT)
+    forward = root.replace("\\", "/")
     assert ports._same_tree(root) is True
-    assert ports._same_tree(root.replace("\\", "/").upper()) is True
-    assert ports._same_tree(root.replace("/", "\\").lower()) is True
+    assert ports._same_tree(forward) is True
+    assert ports._same_tree(root.replace("/", "\\")) is True
+    # Case is not part of a Windows path. On Linux and macOS two case variants
+    # are two checkouts, so --free never stops the other one's backend.
+    folds = os.name == "nt"
+    for variant in (forward.upper(), forward.lower()):
+        assert ports._same_tree(variant) is (folds or variant == forward)
     assert ports._same_tree("") is False
     assert ports._same_tree("C:/somewhere/else") is False
     assert ports._same_tree(root + "-Pinokio") is False

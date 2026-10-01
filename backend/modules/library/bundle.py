@@ -16,6 +16,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from backend.lib.fswalk import walk_files
+
 log = logging.getLogger(__name__)
 
 
@@ -151,7 +153,7 @@ def build_bundle_bytes(
             unity_count += 1
         if unity_package_dir is not None and unity_package_dir.is_dir():
             package_root = unity_package_dir.name
-            for path in sorted(unity_package_dir.rglob("*")):
+            for path in sorted(walk_files(unity_package_dir)):
                 if not path.is_file():
                     continue
                 relative_parts = path.relative_to(unity_package_dir).parts

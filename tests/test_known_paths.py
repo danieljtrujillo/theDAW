@@ -138,6 +138,17 @@ def test_recording_again_moves_the_path_to_the_front_once(
     assert names == ["a.mid", "b.mid"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="case-sensitive paths are POSIX")
+def test_posix_paths_that_differ_in_case_are_two_files(
+    store: Path, tmp_path: Path
+) -> None:
+    lower = _touch(tmp_path / "take.wav")
+    upper = _touch(tmp_path / "TAKE.WAV")
+    known_paths.record(lower, source="pick")
+    known_paths.record(upper, source="pick")
+    assert len(known_paths.recent(kind="audio")) == 2
+
+
 @pytest.mark.skipif(os.name != "nt", reason="case-insensitive paths are Windows")
 def test_windows_paths_match_without_regard_to_case(
     store: Path, tmp_path: Path

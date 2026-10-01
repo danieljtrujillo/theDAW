@@ -443,7 +443,11 @@ def test_spellings_of_one_root_collapse_to_one(tmp_path, monkeypatch):
     _write(root / f"song [{UUID_A[:8]}].mp3")
     import os
 
-    spellings = [str(root), str(root) + os.sep, str(root).swapcase()]
+    spellings = [str(root), str(root) + os.sep]
+    if os.name == "nt":
+        # Case is part of a path off Windows: there a swapped-case spelling
+        # names another folder, which the missing-folder rule drops.
+        spellings.append(str(root).swapcase())
     monkeypatch.setenv(media_roots.ENV_VAR, os.pathsep.join(spellings))
 
     assert len(media_roots.configured_roots()) == 1

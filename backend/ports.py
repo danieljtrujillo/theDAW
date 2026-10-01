@@ -180,12 +180,15 @@ def repo_root() -> Path:
 
 
 def _norm(text: str) -> str:
-    """``text`` with ``/`` separators and lower case, for path comparison.
+    """``text`` with ``/`` separators, for path comparison; lower case on
+    Windows only.
 
     A Windows command line mixes ``/`` and ``\\`` freely and a drive letter's
-    case is not stable.
+    case is not stable. Linux and macOS paths keep their case: ``/srv/theDAW``
+    and ``/srv/thedaw`` are two checkouts there.
     """
-    return text.replace("\\", "/").lower()
+    text = text.replace("\\", "/")
+    return text.lower() if os.name == "nt" else text
 
 
 def _names_folder(folder: Path | str, text: str) -> bool:
@@ -251,7 +254,7 @@ def _started_by_another_checkout(pid: int) -> bool:
             cmd = _norm(" ".join(parent.cmdline()))
         except (psutil.Error, OSError):
             continue
-        if not any(hint in cmd for hint in _BACKEND_ENTRY_POINTS):
+        if not any(hint in cmd.lower() for hint in _BACKEND_ENTRY_POINTS):
             continue
         try:
             cwd = parent.cwd()
@@ -268,7 +271,9 @@ def _is_our_sidecar(cmdline: str, cwd: str, pid: Optional[int] = None) -> bool:
     for folder, entries in _sidecar_folders():
         if not any(entry in low_cmd for entry in entries):
             continue
-        if _names_folder(folder, low_cmd) or _names_folder(folder, cwd or ""):
+        # The folder match reads the command line as written: path case is
+        # folded on Windows only (see ``_norm``).
+        if _names_folder(folder, cmdline or "") or _names_folder(folder, cwd or ""):
             return pid is None or not _started_by_another_checkout(pid)
     return False
 
@@ -366,10 +371,10 @@ def _is_ours(name: str, cmdline: str, cwd: str = "", pid: Optional[int] = None) 
     if not any(hint in low_name for hint in _OUR_EXE_HINTS):
         return False
     if any(hint in low_cmd for hint in _OUR_CMDLINE_HINTS) and (
-        _same_tree(low_cmd) or _same_tree(cwd or "")
+        _same_tree(cmdline or "") or _same_tree(cwd or "")
     ):
         return True
-    return _is_our_sidecar(low_cmd, cwd or "", pid)
+    return _is_our_sidecar(cmdline or "", cwd or "", pid)
 
 
 # Where macOS and most Linux distributions keep lsof, for a launcher whose PATH

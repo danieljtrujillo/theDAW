@@ -31,6 +31,7 @@ import soundfile as sf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile as StarletteUploadFile
+from tests.timing_bounds import prompt_seconds
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -336,7 +337,7 @@ def test_thedaw_render_does_not_block_the_event_loop(
         slow_thread.join(timeout=10)
 
     assert fast_resp.status_code == 200, fast_resp.text
-    assert fast_elapsed < 2.0, (
+    assert fast_elapsed < prompt_seconds(2.0), (
         f"the fast request waited {fast_elapsed:.3f}s behind the slow one — "
         "the event loop was blocked"
     )
@@ -390,7 +391,9 @@ def test_thedaw_render_timeout_kills_the_child_and_returns_promptly(
     # (unbounded) and never the full render timeout again.
     assert communicate_timeouts[1] == vst_router.RENDER_KILL_WAIT_SECONDS
     assert communicate_timeouts[1] < 30
-    assert elapsed < 5.0, f"the request took {elapsed:.3f}s — a wait wasn't bounded"
+    assert elapsed < prompt_seconds(5.0), (
+        f"the request took {elapsed:.3f}s: a wait wasn't bounded"
+    )
     assert pedalboard_spy == []
 
 

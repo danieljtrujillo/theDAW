@@ -90,8 +90,12 @@ _WINDOWS_OPENSSL_FALLBACKS = (
 )
 
 _HOW_TO_FIX = (
-    "install openssl (it ships with Git for Windows: "
-    "C:\\Program Files\\Git\\usr\\bin\\openssl.exe) or put it on PATH"
+    (
+        "install openssl (it ships with Git for Windows: "
+        "C:\\Program Files\\Git\\usr\\bin\\openssl.exe) or put it on PATH"
+    )
+    if os.name == "nt"
+    else "install openssl with your package manager or put it on PATH"
 )
 
 
@@ -252,9 +256,10 @@ def _openssl_candidates() -> list[str]:
         hit = shutil.which("openssl", path=directory)
         if hit:
             add(hit)
-    for candidate in _WINDOWS_OPENSSL_FALLBACKS:
-        if Path(candidate).is_file():
-            add(candidate)
+    if os.name == "nt":
+        for candidate in _WINDOWS_OPENSSL_FALLBACKS:
+            if Path(candidate).is_file():
+                add(candidate)
     return found
 
 

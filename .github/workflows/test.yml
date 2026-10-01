@@ -121,9 +121,18 @@ jobs:
       #   Delete the matching line here as each test is repaired; a stale
       #   --deselect that no longer matches a node id is simply ignored, so
       #   a renamed test starts running again on its own.
+      #
+      # -m "not timing": a test whose only claim is a wall-clock bound carries
+      #   @pytest.mark.timing and runs in the pytest-timing job below, which
+      #   reports and never blocks. A two-vCPU runner under load is no judge
+      #   of a time bound, and this job gates every merge.
+      #
+      # scripts/ci_linux.sh reads THIS step's command out of this file, so the
+      # local Linux run before a pull request is the same command.
       - name: pytest
         run: |
           uv run pytest -q \
+            -m "not timing" \
             --ignore=tests/test_inference.py \
             --ignore=tests/test_autoencoder.py \
             --ignore=tests/test_lora.py \
@@ -133,6 +142,35 @@ jobs:
             --deselect tests/test_modeldl.py::test_duplicate_download_while_live_returns_same_job \
             --deselect tests/test_modeldl.py::test_download_error_path_records_detail \
             --deselect tests/test_modeldl.py::test_clear_removes_finished_jobs
+
+  # The timing tests (@pytest.mark.timing), on the same setup as the pytest
+  # job. This job REPORTS and NEVER BLOCKS: continue-on-error keeps a slow
+  # runner from turning a pull request red, and the job is not one of the six
+  # checks that define green (CLAUDE.md hard rule 5). Read its log when a
+  # timing test fails; a bound that fails here on every run is a real
+  # regression.
+  pytest-timing:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+      - name: Install uv
+        run: pipx install uv
+      - name: Install dependencies
+        run: uv sync --frozen --group dev --no-install-package pyk4a-bundle
+      - name: pytest (timing tests, non-blocking)
+        run: uv run pytest -q -m timing
 
   # `npm run lint` in frontend/ is `tsc --noEmit` plus the canonical-class
   # check (scripts/check-canonical-classes.mjs, the same rule VS Code reports
