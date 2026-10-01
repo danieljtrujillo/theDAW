@@ -46,8 +46,18 @@ export type CockpitAction =
  *  giving up on a host that never answers. */
 export const HOST_CAP_PLUGIN_FILE = 'plugin-file';
 
+/** This host put its rack-effect API on the cockpit's window (lib/swayHostFx):
+ *  every cockpit track's FX chain can list and play theDAW's rack effects. */
+export const HOST_CAP_RACK_FX = 'rack-fx';
+
 /** What this host can do for the cockpit, sent in sway/host-ready. */
-export const HOST_CAPS: readonly string[] = [HOST_CAP_PLUGIN_FILE];
+export const HOST_CAPS: readonly string[] = [HOST_CAP_PLUGIN_FILE, HOST_CAP_RACK_FX];
+
+/** The caps one sway/host-ready lists. `rackFxHanded` is whether the host API
+ *  reached the cockpit's window; a cockpit told 'rack-fx' reads it from there. */
+export function hostCapsFor(rackFxHanded: boolean): string[] {
+  return HOST_CAPS.filter((c) => c !== HOST_CAP_RACK_FX || rackFxHanded);
+}
 
 /** The sway/plugin-file frame that answers a sway/choose-plugin-file. */
 export interface PluginFileFrame {

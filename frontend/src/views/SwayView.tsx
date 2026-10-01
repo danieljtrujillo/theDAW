@@ -40,9 +40,9 @@ import { GAN_FILTER } from '../lib/fileFilters';
 import { openSwayScene, openSwaySceneFromPath } from '../lib/swayOpen';
 import {
   CAP_HOST_HEADER,
-  HOST_CAPS,
   cockpitAction,
   hardwareStatus,
+  hostCapsFor,
   hostScenesFrame,
   loadSceneLists,
   pluginFileFrame,
@@ -51,6 +51,7 @@ import {
   type HostAudioSource,
   type SwaySceneRow,
 } from '../lib/swayHost';
+import { handSwayHostApi } from '../lib/swayHostFx';
 import { useMidiDevicesStore } from '../state/midiDevicesStore';
 import { useMidiTriggerStore } from '../state/midiTriggerStore';
 import { useStatusBarStore } from '../state/statusBarStore';
@@ -620,7 +621,10 @@ export const SwayView: React.FC = () => {
           );
           const queued = pendingRef.current;
           pendingRef.current = [];
-          post({ type: 'sway/host-ready', v: PROTOCOL, host: 'theDAW', caps: [...HOST_CAPS] });
+          // The rack-effect API goes onto the cockpit's window first, so a
+          // cockpit that reads 'rack-fx' in the caps finds it there.
+          const rackFx = handSwayHostApi(iframeRef.current?.contentWindow);
+          post({ type: 'sway/host-ready', v: PROTOCOL, host: 'theDAW', caps: hostCapsFor(rackFx) });
           for (const frame of queued) post(frame);
           break;
         }
