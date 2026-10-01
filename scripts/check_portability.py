@@ -786,6 +786,11 @@ def check_source(source: str, rel_path: str) -> list[Hit]:
     return sorted(f.hits, key=lambda h: (h.line, h.pattern, h.message))
 
 
+def _frozen(rel: Path) -> bool:
+    """tests/fixtures holds verbatim copies of older builds; they stay as written."""
+    return rel.parts[:2] == ("tests", "fixtures")
+
+
 def _files(root: Path, args: list[str]) -> Iterable[Path]:
     if args:
         for arg in args:
@@ -798,7 +803,7 @@ def _files(root: Path, args: list[str]) -> Iterable[Path]:
                 rel = path.resolve().relative_to(root.resolve())
             except ValueError:
                 continue
-            if rel.parts and rel.parts[0] in TREES:
+            if rel.parts and rel.parts[0] in TREES and not _frozen(rel):
                 yield path
         return
     for tree in TREES:
@@ -808,7 +813,7 @@ def _files(root: Path, args: list[str]) -> Iterable[Path]:
         # sorted(): one order on every filesystem. The repo's own source tree
         # holds no directory links, so rglob is the right walk here.
         for path in sorted(base.rglob("*.py")):  # portability: repo sources only
-            if "__pycache__" not in path.parts:
+            if "__pycache__" not in path.parts and not _frozen(path.relative_to(root)):
                 yield path
 
 
