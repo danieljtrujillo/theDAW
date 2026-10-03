@@ -52,6 +52,8 @@ import {
   type SwaySceneRow,
 } from '../lib/swayHost';
 import { handSwayHostApi } from '../lib/swayHostFx';
+import { SWAY_VST_ENTRY_PREFIX, swayHostVstApi } from '../lib/swayHostVst';
+import { HostedVstWindow } from '../components/audio/HostedVstWindow';
 import { useMidiDevicesStore } from '../state/midiDevicesStore';
 import { useMidiTriggerStore } from '../state/midiTriggerStore';
 import { useStatusBarStore } from '../state/statusBarStore';
@@ -621,10 +623,10 @@ export const SwayView: React.FC = () => {
           );
           const queued = pendingRef.current;
           pendingRef.current = [];
-          // The rack-effect API goes onto the cockpit's window first, so a
-          // cockpit that reads 'rack-fx' in the caps finds it there.
+          // The host API goes onto the cockpit's window first, so a cockpit
+          // that reads 'rack-fx' or 'vst-live' in the caps finds it there.
           const rackFx = handSwayHostApi(iframeRef.current?.contentWindow);
-          post({ type: 'sway/host-ready', v: PROTOCOL, host: 'theDAW', caps: hostCapsFor(rackFx) });
+          post({ type: 'sway/host-ready', v: PROTOCOL, host: 'theDAW', caps: hostCapsFor(rackFx, swayHostVstApi.available()) });
           for (const frame of queued) post(frame);
           break;
         }
@@ -867,6 +869,8 @@ export const SwayView: React.FC = () => {
           </div>
         )}
 
+        {/* A cockpit track's plugin opens its own window here. */}
+        <HostedVstWindow entryPrefix={SWAY_VST_ENTRY_PREFIX} ownerTab="sway" />
         <SwayTrackMenu
           request={trackMenu}
           onClose={() => setTrackMenu(null)}

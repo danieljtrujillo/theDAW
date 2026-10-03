@@ -24,6 +24,7 @@
  * and pass through until their module is registered, which `prepare` does.
  */
 import { optionValue, paramKind, isLog } from '../components/audio/effects/paramFormat';
+import { swayHostVstApi, type SwayHostVstApi } from './swayHostVst';
 import {
   RACK_EFFECTS,
   ensureChopModule,
@@ -85,6 +86,8 @@ export interface SwayHostApi {
   catalog: () => SwayHostFxEffect[];
   prepare: (ctx: BaseAudioContext) => Promise<string[]>;
   build: (ctx: BaseAudioContext, effectId: string, params?: Record<string, number>) => SwayHostFxNode | null;
+  /** VST3 plugins on cockpit tracks, live (lib/swayHostVst, cap `vst-live`). */
+  vst: SwayHostVstApi;
 }
 
 /** The rack effects that hold an AudioWorkletNode, by the module they need. */
@@ -136,10 +139,11 @@ function ownParams(def: RackEffectDef, params: Record<string, number> | null | u
 }
 
 /** The host API. One object serves every cockpit this page frames. */
-export function createSwayHostApi(): SwayHostApi {
+export function createSwayHostApi(vst: SwayHostVstApi = swayHostVstApi): SwayHostApi {
   return {
     version: SWAY_HOST_API_VERSION,
     host: 'theDAW',
+    vst,
     catalog: () => RACK_EFFECTS.map(describeEffect),
     prepare: async (ctx) => {
       const failed: string[] = [];

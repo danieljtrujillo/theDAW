@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 
 import { RACK_EFFECTS } from './rackEffects.ts';
-import { HOST_CAP_PLUGIN_FILE, HOST_CAP_RACK_FX, HOST_CAPS, hostCapsFor } from './swayHost.ts';
+import { HOST_CAP_PLUGIN_FILE, HOST_CAP_RACK_FX, HOST_CAP_VST_LIVE, HOST_CAPS, hostCapsFor } from './swayHost.ts';
 import { SWAY_HOST_API_KEY, createSwayHostApi, handSwayHostApi, swayHostApi } from './swayHostFx.ts';
 
 /* ── a stand-in context ────────────────────────────────────────────────────── */
@@ -145,5 +145,8 @@ assert.equal(handSwayHostApi(sealed), false, 'a window that refuses the write ge
 assert.ok(HOST_CAPS.includes(HOST_CAP_RACK_FX));
 assert.deepEqual(hostCapsFor(true), [HOST_CAP_PLUGIN_FILE, HOST_CAP_RACK_FX]);
 assert.deepEqual(hostCapsFor(false), [HOST_CAP_PLUGIN_FILE], 'no API on the cockpit, no cap');
+assert.ok(HOST_CAPS.includes(HOST_CAP_VST_LIVE));
+assert.deepEqual(hostCapsFor(true, true), [HOST_CAP_PLUGIN_FILE, HOST_CAP_RACK_FX, HOST_CAP_VST_LIVE]);
+assert.deepEqual(hostCapsFor(false, true), [HOST_CAP_PLUGIN_FILE], 'live plugins ride on the API, so no API, no live cap');
 
 console.log('swayHostFx: ok');
